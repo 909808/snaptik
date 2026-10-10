@@ -1,0 +1,21 @@
+services:
+  snaptik:
+    build: .
+    image: snaptik
+    # Bound to localhost: put a TLS-terminating reverse proxy in front for public use (see README).
+    # Change to "8000:8000" to expose it directly.
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      SNAPTIK_RATE_LIMIT_LOOKUP: "20"     # lookups per minute per client
+      SNAPTIK_RATE_LIMIT_DOWNLOAD: "30"   # downloads per minute per client
+      # SNAPTIK_PROXY_URL: "http://user:pass@proxy.example:3128"   # if TikTok blocks your server's IP
+      # FORWARDED_ALLOW_IPS: "*"          # trust X-Forwarded-For from a reverse proxy so limits see real client IPs
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777          # MP3 conversion scratch space
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

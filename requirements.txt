@@ -1,0 +1,9 @@
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+httpx>=0.27,<1.0
+
+# TikTok changes its site often and yt-dlp ships fixes quickly: keep it current
+# (`pip install -U yt-dlp`). The curl-cffi extra gives yt-dlp the browser TLS
+# fingerprint that TikTok's web endpoints expect; without it extraction is
+# much more likely to be blocked.
+yt-dlp[default,curl-cffi]>=2026.8.19
