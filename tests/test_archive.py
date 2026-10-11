@@ -30,6 +30,7 @@ from app.archive import (
 )
 from app.backend import Download
 from app.errors import (
+    AppError,
     ConversionFailed,
     FormatUnavailable,
     InvalidRequest,
@@ -342,8 +343,16 @@ def test_when_tiktok_pushes_back_the_run_backs_off_then_recovers() -> None:
     assert progress.snapshot()["state"] == "done"
 
 
+def blocked_from(first_refused: int, opened_before: int) -> dict[tuple[str, str], list[AppError | None]]:
+    """A connection TikTok starts refusing: the post that opened before is refused from then on too."""
+    return {
+        (post_id(first_refused), "lookup"): [UpstreamBlocked()] * 10,
+        (post_id(opened_before), "lookup"): [None, *[UpstreamBlocked()] * 10],
+    }
+
+
 def test_repeated_blocking_aborts_the_run_with_a_clear_report_and_no_more_requests() -> None:
-    backend = FakeBackend(failures={(post_id(2), "lookup"): [UpstreamBlocked()] * 10})
+    backend = FakeBackend(failures=blocked_from(first_refused=2, opened_before=1))
     waits = Waits()
     files, order, progress = run(backend, refs(1, 2, 3, 4), pacer=pacer(waits, backoff_start=10, max_blocks=2))
     snap = progress.snapshot()
@@ -353,6 +362,48 @@ def test_repeated_blocking_aborts_the_run_with_a_clear_report_and_no_more_reques
     report = files["REPORT.txt"].decode()
     assert "ended early" in report and "refusing requests" in report and "Saved 1 of 2 posts" in report
     assert {r["id"]: r["status"] for r in records(files)} == {post_id(1): "ok", post_id(2): "failed"}
+
+
+def test_a_post_tiktok_will_not_show_does_not_stop_the_run() -> None:
+    """TikTok says "your IP address is blocked" for a deleted post too. A post that opened a moment ago still
+    opens, so this is about the one post: no long back-off, no abort, and the rest of the posts are saved."""
+    backend = FakeBackend(failures={(post_id(2), "lookup"): [UpstreamBlocked()] * 10})
+    waits = Waits()
+    files, order, progress = run(backend, refs(1, 2, 3), pacer=pacer(waits, delay=3.0, backoff_start=60))
+    snap = progress.snapshot()
+    assert (snap["state"], snap["saved"], snap["failed"]) == ("done", 2, 1)
+    assert {r["id"]: r["status"] for r in records(files)} == {post_id(1): "ok", post_id(2): "failed", post_id(3): "ok"}
+    assert "may have been deleted" in next(r for r in records(files) if r["id"] == post_id(2))["reason"]
+    assert max(waits.calls) < 30  # only the normal pauses and one short retry, never the minutes-long back-off
+    assert backend.lookups.count(post_id(2)) == 2  # the first try and one more
+    assert backend.lookups.count(post_id(1)) == 3  # saved once, then asked for twice as the control
+
+
+def test_a_post_that_will_not_show_is_tried_again_on_the_next_run() -> None:
+    backend = FakeBackend(failures={(post_id(2), "lookup"): [UpstreamBlocked()] * 10})
+    files, _, _ = run(backend, refs(1, 2))
+    status = {r["id"]: r["status"] for r in records(files)}
+    assert status[post_id(2)] == "failed"  # not "skipped": if TikTok was merely moody, a later run gets it
+    assert "Not saved:" in files["REPORT.txt"].decode()
+
+
+def test_a_post_saved_in_an_earlier_run_serves_as_the_control_for_the_first_post_of_this_one() -> None:
+    saved = {"id": post_id(9), "url": post_url(9), "status": "ok", "posted_at": "2020-01-01T00:00:00Z", "files": ["old.mp4"]}
+    backend = FakeBackend(failures={(post_id(1), "lookup"): [UpstreamBlocked()] * 10})
+    waits = Waits()
+    files, _, progress = run(backend, refs(1, 2), known=[saved], pacer=pacer(waits, backoff_start=60))
+    assert progress.snapshot()["state"] == "done" and progress.snapshot()["failed"] == 1
+    assert {r["id"]: r["status"] for r in records(files)} == {post_id(9): "ok", post_id(1): "failed", post_id(2): "ok"}
+    assert max(waits.calls) < 30
+
+
+def test_a_connection_that_is_refused_from_the_very_first_post_still_backs_off() -> None:
+    """Nothing is known to work yet, so there is no control: a refusal is treated as a block, as before."""
+    backend = FakeBackend(failures={(post_id(1), "lookup"): [UpstreamBlocked()] * 10})
+    waits = Waits()
+    _, _, progress = run(backend, refs(1, 2), pacer=pacer(waits, backoff_start=30, max_blocks=2))
+    assert progress.snapshot()["state"] == "aborted"
+    assert [w >= 30 for w in waits.calls] == [True, True]
 
 
 def test_a_string_of_unexplained_failures_aborts_instead_of_hammering() -> None:

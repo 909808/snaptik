@@ -131,13 +131,14 @@ class FakeBackend:
     """Implements the ``Backend`` protocol without touching the network.
 
     ``failures`` scripts errors: ``{(post_id, stage): [error, ...]}`` raises each error in turn at that
-    stage ("lookup", a kind such as "video", or "image:0") and succeeds once the list is used up.
+    stage ("lookup", a kind such as "video", or "image:0") and succeeds once the list is used up. A ``None``
+    in the list means "succeed this time" (so a post can open once and be refused afterwards).
     """
 
     def __init__(self, info: VideoInfo | None = None, *, payload: bytes = b"0123456789" * 100,
                  error: AppError | None = None, ffmpeg_available: bool = True,
                  posts: Mapping[str, VideoInfo] | None = None, listing: ProfileListing | None = None,
-                 failures: Mapping[tuple[str, str], Sequence[AppError]] | None = None,
+                 failures: Mapping[tuple[str, str], Sequence[AppError | None]] | None = None,
                  short_reads: set[tuple[str, str]] | None = None,
                  on_lookup: Callable[[str], None] | None = None) -> None:  # fmt: skip
         self.info = info or make_info()
@@ -207,8 +208,8 @@ class FakeBackend:
 
     def _fail(self, pid: str, stage: str) -> None:
         queue = self.failures.get((pid, stage))
-        if queue:
-            raise queue.pop(0)
+        if queue and (error := queue.pop(0)) is not None:
+            raise error
 
     def _download(self, pid: str, stage: str, filename: str) -> Download:
         data = self.body(pid, stage)

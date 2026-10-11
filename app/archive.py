@@ -231,6 +231,10 @@ class Pacer:
         """The pause between two posts: the base delay, randomly varied so it doesn't tick like a metronome."""
         return self.delay * self._rng.uniform(1 - self.jitter, 1 + self.jitter)
 
+    def short_wait(self) -> float:
+        """A brief pause before trying a post again after a hiccup."""
+        return max(1.0, self.delay) * 2 * self._rng.uniform(1.0, 1.5)
+
     def decide(self, exc: AppError, retries_used: int) -> Decision:
         if isinstance(exc, _PERMANENT):
             self.healthy()  # TikTok answered normally; the post is just gone
@@ -246,7 +250,7 @@ class Pacer:
             pause = min(self.backoff_max, self.backoff_start * 2 ** (self._blocks - 1))
             return Decision("retry", wait=pause * self._rng.uniform(1.0, 1.25), reason=exc.message)
         if retries_used < self.max_retries:  # a hiccup (network, conversion): try again shortly
-            return Decision("retry", wait=max(1.0, self.delay) * 2 * self._rng.uniform(1.0, 1.5), reason=exc.message)
+            return Decision("retry", wait=self.short_wait(), reason=exc.message)
         self._failed_in_a_row += 1
         if self._failed_in_a_row >= self.max_failed_in_a_row:
             return Decision(
@@ -326,6 +330,22 @@ def _failure(ref: PostRef, status: str, reason: str) -> dict[str, Any]:
     return {"id": ref.id, "url": ref.url, "status": status, "reason": reason}
 
 
+_OUT_OF_REACH = "TikTok wouldn't show this post: it may have been deleted, or be restricted for this region."
+
+
+def _still_answers(backend: Backend, control: PostRef) -> bool:
+    """Does TikTok still serve a post that opened a moment ago?
+
+    TikTok says "your IP address is blocked" for a post that has been deleted just as it does for a
+    connection that really is blocked. A blocked connection is refused *everything*, so asking for a post
+    that worked tells the two apart: if it still opens, only the other post is out of reach."""
+    try:
+        backend.open_post(control.url).close()
+    except AppError:
+        return False
+    return True
+
+
 def _save_post(
     backend: Backend,
     ref: PostRef,
@@ -334,12 +354,25 @@ def _save_post(
     progress: Progress,
     max_bytes: int,
     temp_dir: str | None,
+    control: PostRef | None = None,
 ) -> Generator[ArchiveFile, None, _PostResult]:
     retries = 0
     while True:
         try:
             files, record = _fetch_post(backend, ref, wants, max_bytes, temp_dir)
         except AppError as exc:
+            if isinstance(exc, UpstreamBlocked) and control is not None and _still_answers(backend, control):
+                pacer.healthy()  # TikTok is answering normally: this post is the problem, not the connection
+                log.info("post %s refused while %s still opens: out of reach", ref.id, control.id)
+                if retries < 1:  # once more after a short pause, in case that was a hiccup
+                    retries += 1
+                    progress.message("TikTok wouldn't show this post. Trying once more.")
+                    if pacer.wait(pacer.short_wait()):
+                        return _PostResult(_failure(ref, "skipped", "Stopped before this post was saved."), cancelled=True)
+                    progress.begin(ref.id)
+                    continue
+                # "failed", not "skipped": if this diagnosis is wrong, a later run tries the post again.
+                return _PostResult(_failure(ref, "failed", _OUT_OF_REACH))
             decision = pacer.decide(exc, retries)
             log.info("post %s: %s -> %s", ref.id, exc.message, decision.action)
             if decision.action == "retry":
@@ -378,6 +411,9 @@ def archive_posts(
     """Yield every file of every post, one post at a time, then ``posts.json``, ``posts.csv`` and
     ``REPORT.txt``. ``known`` are records from earlier runs, merged into the manifest."""
     records: list[dict[str, Any]] = [dict(r) for r in known]
+    # A post that is known to open (one saved in an earlier run, until this run saves one): used to tell
+    # a post TikTok won't show from a connection TikTok refuses.
+    control = next((PostRef(r["id"], r["url"]) for r in known if r.get("status") == "ok" and r.get("id") and r.get("url")), None)
     state, note = "stopped", "The connection was closed."  # what is reported if the consumer leaves mid-run
     try:
         for index, ref in enumerate(refs):
@@ -393,7 +429,9 @@ def archive_posts(
                     state, note = "stopped", "Stopped on request."
                     break
             progress.begin(ref.id)
-            result = yield from _save_post(backend, ref, wants, pacer, progress, max_bytes, temp_dir)
+            result = yield from _save_post(backend, ref, wants, pacer, progress, max_bytes, temp_dir, control)
+            if result.record["status"] == "ok":
+                control = ref
             records.append(result.record)
             progress.completed(result.record["status"])
             if on_record:

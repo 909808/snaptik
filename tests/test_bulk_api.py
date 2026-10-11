@@ -230,7 +230,8 @@ def test_pressing_stop_finishes_the_zip_with_what_is_done() -> None:
 
 
 def test_repeated_blocking_ends_the_zip_early_with_a_report() -> None:
-    backend = FakeBackend(failures={(post_id(2), "lookup"): [UpstreamBlocked()] * 10}, listing=make_listing(4))
+    failures = {(post_id(2), "lookup"): [UpstreamBlocked()] * 10, (post_id(3), "lookup"): [None, *[UpstreamBlocked()] * 10]}
+    backend = FakeBackend(failures=failures, listing=make_listing(4))  # post 3 opened, then everything is refused
     c, _, _ = make(backend, bulk_max_backoff=1)
     with c:
         response = bulk(c, [4, 3, 2, 1])
@@ -239,6 +240,19 @@ def test_repeated_blocking_ends_the_zip_early_with_a_report() -> None:
         snap = c.get("/api/bulk/progress", params={"n": JOB}).json()
     assert snap["state"] == "aborted" and "refusing requests" in report
     assert post_id(1) not in backend.lookups  # it stopped asking TikTok
+
+
+def test_one_post_tiktok_will_not_show_does_not_cut_the_zip_short() -> None:
+    backend = FakeBackend(failures={(post_id(2), "lookup"): [UpstreamBlocked()] * 10}, listing=make_listing(4))
+    c, _, _ = make(backend, bulk_max_backoff=1)
+    with c:
+        response = bulk(c, [4, 3, 2, 1])
+        snap = c.get("/api/bulk/progress", params={"n": JOB}).json()
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            assert archive.testzip() is None
+            report = archive.read("tiktok_scout2015/REPORT.txt").decode()
+    assert (snap["state"], snap["saved"], snap["failed"]) == ("done", 3, 1)
+    assert "may have been deleted" in report and "ended early" not in report
 
 
 # ---------------------------------------------------------------------- validation

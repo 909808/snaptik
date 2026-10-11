@@ -182,7 +182,9 @@ def test_the_log_survives_a_crash_in_the_middle_of_a_line(cli: Cli) -> None:
 
 
 def test_when_tiktok_keeps_refusing_it_backs_off_for_a_long_time_then_stops_cleanly(cli: Cli) -> None:
-    backend = backend_for(4, failures={(post_id(3), "lookup"): [UpstreamBlocked()] * 50})  # the 2nd post processed
+    # Post 3 is the 2nd processed; after post 4 opened, everything is refused (so the control is refused too).
+    backend = backend_for(4, failures={(post_id(3), "lookup"): [UpstreamBlocked()] * 50,
+                                       (post_id(4), "lookup"): [None, *[UpstreamBlocked()] * 50]})  # fmt: skip
     code, out, err = cli.run(backend)
     assert code == EXIT_BLOCKED and "Stopped early" in err and "refusing requests" in err
     waits = [s for s in cli.sleeps if s >= 30]
@@ -195,12 +197,25 @@ def test_when_tiktok_keeps_refusing_it_backs_off_for_a_long_time_then_stops_clea
 
 
 def test_a_blocked_run_carries_on_the_next_time(cli: Cli) -> None:
-    backend = backend_for(3, failures={(post_id(2), "lookup"): [UpstreamBlocked()] * 50})
+    backend = backend_for(3, failures={(post_id(2), "lookup"): [UpstreamBlocked()] * 50,
+                                       (post_id(3), "lookup"): [None, *[UpstreamBlocked()] * 50]})  # fmt: skip
     assert cli.run(backend)[0] == EXIT_BLOCKED
     backend.failures.clear()  # TikTok calmed down
     code, out, _ = cli.run(backend)
     assert code == EXIT_OK and "Saved 2 of 2" in out
     assert {r["status"] for r in cli.log().values()} == {"ok"} and len(cli.log()) == 3
+
+
+def test_a_deleted_post_does_not_stall_the_run_and_is_tried_again_next_time(cli: Cli) -> None:
+    backend = backend_for(4, failures={(post_id(3), "lookup"): [UpstreamBlocked()] * 50})  # TikTok "blocks" this one post only
+    code, out, err = cli.run(backend)
+    assert (code, err) == (EXIT_OK, "")
+    assert "Saved 3 of 4, 1 failed" in out and not [s for s in cli.sleeps if s >= 30]  # no minutes-long waiting
+    assert {pid: r["status"] for pid, r in cli.log().items()} == {
+        post_id(4): "ok", post_id(3): "failed", post_id(2): "ok", post_id(1): "ok"}  # fmt: skip
+    backend.failures.clear()  # it turns out to exist after all
+    code, out, _ = cli.run(backend)
+    assert code == EXIT_OK and "1 to fetch" in out and "Saved 1 of 1" in out  # only the failed one is asked for again
 
 
 def test_max_backoff_caps_the_waits(cli: Cli) -> None:
