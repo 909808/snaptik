@@ -49,6 +49,12 @@ def cdn(media: dict[str, bytes]) -> Iterator[Cdn]:
             "/photo2.jpg": (200, "image/jpeg", media["photo2.jpg"]),
             "/photo3.png": (200, "image/png", media["photo3.png"]),
             "/icon.svg": (200, "image/svg+xml", b"<svg xmlns='http://www.w3.org/2000/svg' onload='alert(1)'/>"),
+            # A CDN that does not say what its files are: only the bytes can tell.
+            "/cover-unlabelled.jpg": (200, "application/octet-stream", media["cover.jpg"]),
+            "/photo3-unlabelled.png": (200, "binary/octet-stream", media["photo3.png"]),
+            "/icon-unlabelled.svg": (200, "application/octet-stream", b"<svg xmlns='http://www.w3.org/2000/svg' onload='alert(1)'/>"),
+            "/page-unlabelled.html": (200, "application/octet-stream", b"<html>not an image</html>"),
+            "/empty-unlabelled": (200, "application/octet-stream", b""),
             "/dead.mp4": (404, "text/plain", b"gone"),
             "/big.bin": (200, "video/mp4", b"x" * (2 * 1024 * 1024)),
             "/nolength.bin": (200, "video/mp4", b"x" * (2 * 1024 * 1024)),

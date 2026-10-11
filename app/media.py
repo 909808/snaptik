@@ -112,7 +112,20 @@ class VideoInfo:
 def _int(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return int(value)
+    try:
+        return int(value)
+    except (ValueError, OverflowError):  # NaN and infinity
+        return None
+
+
+# What a ZIP entry can hold: 1980-01-01 to the end of 2107. A "publication date" outside that is garbage
+# (milliseconds instead of seconds, say), and must not be allowed to break an archive part-way through.
+TIMESTAMP_MIN, TIMESTAMP_MAX = 315_532_800, 4_354_819_199
+
+
+def _timestamp(value: Any) -> int | None:
+    stamp = _int(value)
+    return stamp if stamp is not None and TIMESTAMP_MIN <= stamp <= TIMESTAMP_MAX else None
 
 
 def _float(value: Any) -> float | None:
@@ -222,7 +235,7 @@ def parse_info(raw: Mapping[str, Any], canonical_url: str) -> VideoInfo:
         track=_text(raw.get("track"), 120) or None,
         artists=[_text(a, 80) for a in artists if isinstance(a, str) and a][:5] if isinstance(artists, list) else [],
         formats=[f for item in raw.get("formats") or [] if (f := _parse_format(item))],
-        timestamp=_int(raw.get("timestamp")),
+        timestamp=_timestamp(raw.get("timestamp")),
         images=_image_urls(raw.get("snaptik_images")),
         caption=_multiline(raw.get("description"), 4000),
     )
@@ -447,7 +460,7 @@ def parse_profile_entry(entry: Any, handle: str) -> ProfilePost | None:
         id=post_id,
         url=f"https://www.tiktok.com/@{handle}/video/{post_id}",  # rebuilt: never trust the entry's own URL
         caption=_text(entry.get("description") or entry.get("title"), 300),
-        timestamp=_int(entry.get("timestamp")),
+        timestamp=_timestamp(entry.get("timestamp")),
         duration=_int(entry.get("duration")),
         thumbnail=covers[0] if covers else None,
         stats={

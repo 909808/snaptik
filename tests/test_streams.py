@@ -67,6 +67,8 @@ def test_entries_get_the_post_time_and_old_dates_are_clamped() -> None:
     assert zipfile.ZipFile(io.BytesIO(data)).getinfo("new").date_time == (2023, 11, 14, 22, 13, 20)
     ancient = build({"old": b"x"}, mtime=5)  # before 1980, which zip cannot store
     assert zipfile.ZipFile(io.BytesIO(ancient)).getinfo("old").date_time[0] == 1980
+    far_future = build({"late": b"x"}, mtime=10**12)  # after 2107, which it cannot store either
+    assert zipfile.ZipFile(io.BytesIO(far_future)).getinfo("late").date_time[:5] == (2107, 12, 31, 23, 59)
 
 
 def test_bytes_are_emitted_while_an_entry_is_still_being_fed() -> None:

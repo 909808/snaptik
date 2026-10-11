@@ -19,7 +19,7 @@ import pytest
 from yt_dlp.extractor.common import InfoExtractor
 from yt_dlp.utils import DownloadError, ExtractorError
 
-from app.backend import YtDlpBackend, map_ytdlp_error, sweep_stale_tempdirs
+from app.backend import YtDlpBackend, map_ytdlp_error, sniff_image, sweep_stale_tempdirs
 from app.config import Settings
 from app.errors import (
     ConversionFailed,
@@ -395,6 +395,64 @@ def test_only_raster_images_are_relayed_as_covers(cdn: Cdn, media: dict[str, byt
     finally:
         download.close()
     assert cdn.fetched() == ["/icon.svg", "/cover.jpg"]
+
+
+@pytest.mark.parametrize(
+    ("head", "expected"),
+    [
+        (b"\xff\xd8\xff\xe0" + b"\0" * 12, "image/jpeg"),
+        (b"\x89PNG\r\n\x1a\n" + b"\0" * 8, "image/png"),
+        (b"RIFF\x24\x00\x00\x00WEBPVP8 ", "image/webp"),
+        (b"GIF87a" + b"\0" * 10, "image/gif"),
+        (b"GIF89a" + b"\0" * 10, "image/gif"),
+        (b"\x00\x00\x00\x1cftypavif" + b"\0" * 4, "image/avif"),
+        (b"<svg xmlns='http://www.w3.org/2000/svg'", None),  # script in disguise
+        (b"<!doctype html><html>", None),
+        (b"RIFF\x24\x00\x00\x00WAVEfmt ", None),  # a RIFF file that is not an image
+        (b"\x00\x00\x00\x18ftypmp42" + b"\0" * 4, None),  # a video
+        (b"\xff\xd8", None),  # too short to be sure
+        (b"", None),
+    ],
+)
+def test_images_are_recognised_by_their_first_bytes(head: bytes, expected: str | None) -> None:
+    assert sniff_image(head) == expected
+
+
+@pytest.mark.parametrize(
+    ("path", "ext", "media_type", "key"),
+    [("/cover-unlabelled.jpg", "jpg", "image/jpeg", "cover.jpg"), ("/photo3-unlabelled.png", "png", "image/png", "photo3.png")],
+)
+def test_an_image_the_cdn_does_not_label_is_recognised_and_arrives_whole(
+    cdn: Cdn, media: dict[str, bytes], path: str, ext: str, media_type: str, key: str
+) -> None:
+    download = make_backend(tiktok_like(cdn, thumbnails=[{"id": "a", "url": cdn.url + path}])).open_download(CANONICAL, "cover")
+    try:
+        assert download.length == len(media[key])
+        assert read_all(download) == media[key]  # including the first bytes that were read to tell what it is
+        assert (download.media_type, download.filename) == (media_type, f"tiktok_scout2015_6718335390845095173_cover.{ext}")
+    finally:
+        download.close()
+
+
+def test_an_unlabelled_file_that_is_not_a_raster_image_is_never_relayed(cdn: Cdn, media: dict[str, bytes]) -> None:
+    result = tiktok_like(cdn, thumbnails=[
+        {"id": "a", "url": cdn.url + "/icon-unlabelled.svg", "preference": 3},
+        {"id": "b", "url": cdn.url + "/page-unlabelled.html", "preference": 2},
+        {"id": "c", "url": cdn.url + "/empty-unlabelled", "preference": 1},
+        {"id": "d", "url": cdn.url + "/cover-unlabelled.jpg", "preference": 0},
+    ])  # fmt: skip
+    download = make_backend(result).open_download(CANONICAL, "cover")
+    try:
+        assert read_all(download) == media["cover.jpg"]
+    finally:
+        download.close()
+    assert cdn.fetched() == ["/icon-unlabelled.svg", "/page-unlabelled.html", "/empty-unlabelled", "/cover-unlabelled.jpg"]
+
+
+def test_a_post_whose_only_cover_is_unlabelled_script_has_no_cover(cdn: Cdn) -> None:
+    result = tiktok_like(cdn, thumbnails=[{"id": "a", "url": cdn.url + "/icon-unlabelled.svg"}])
+    with pytest.raises(FormatUnavailable):
+        make_backend(result).open_download(CANONICAL, "cover")
 
 
 def test_the_response_is_registered_before_the_post_session_that_owns_it(cdn: Cdn) -> None:

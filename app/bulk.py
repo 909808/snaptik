@@ -79,7 +79,10 @@ def write_file(root: Path, file: ArchiveFile) -> Path:
         partial.unlink(missing_ok=True)
         raise
     if file.mtime:
-        os.utime(target, (file.mtime, file.mtime))  # file times = when the post was published
+        try:
+            os.utime(target, (file.mtime, file.mtime))  # file times = when the post was published
+        except (OSError, OverflowError, ValueError):
+            pass  # a nicety: a file system that rejects the date must not fail the run
     return target
 
 

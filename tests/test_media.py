@@ -19,6 +19,7 @@ from app.media import (
     hashtags,
     is_slideshow,
     parse_info,
+    parse_profile_entry,
     post_kind,
     post_record,
     posted_at,
@@ -310,6 +311,31 @@ def test_hashtags_are_unique_ordered_and_unicode_aware() -> None:
 def test_post_dates_tolerate_missing_and_absurd_timestamps(timestamp: int | None, iso: str | None, day: str | None) -> None:
     info = make_info(timestamp=timestamp)
     assert (posted_at(info), posted_date(info)) == (iso, day)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (1_561_572_000, 1_561_572_000),
+        (1_561_572_000.9, 1_561_572_000),
+        (1_561_572_000_000, None),  # milliseconds, not seconds: no real post is dated in the year 51000
+        (0, None),
+        (-5, None),
+        (315_532_799, None),  # just before 1980, which an archive cannot store
+        (4_354_819_200, None),  # the first second after 2107, likewise
+        (float("nan"), None),
+        (float("inf"), None),
+        ("1561572000", None),
+        (True, None),
+        (None, None),
+    ],
+)
+def test_a_publication_date_that_cannot_be_right_is_dropped_at_parsing(raw: object, expected: int | None) -> None:
+    """One garbage date must never be able to break an archive part-way through: it just reads as 'undated'."""
+    assert parse_info({"timestamp": raw}, CANONICAL).timestamp == expected
+    entry = {"id": "7123456789012345678", "timestamp": raw}
+    post = parse_profile_entry(entry, "scout2015")
+    assert post is not None and post.timestamp == expected
 
 
 def test_the_post_record_has_everything_worth_keeping() -> None:

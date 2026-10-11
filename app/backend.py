@@ -67,6 +67,8 @@ TIKTOK_REFERER = "https://www.tiktok.com/"
 _AUDIO_TYPES = {"mp3": "audio/mpeg", "m4a": "audio/mp4", "aac": "audio/aac", "ogg": "audio/ogg", "opus": "audio/ogg"}
 # Raster formats only: never relay something like SVG that could carry script under our origin.
 _IMAGE_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/avif": "avif", "image/gif": "gif"}
+# Content types that say nothing about the bytes: for these the file itself decides what it is.
+_GENERIC_TYPES = {"", "application/octet-stream", "binary/octet-stream", "application/x-octet-stream"}
 
 
 class Download:
@@ -220,6 +222,46 @@ def read_fully(download: Download, limit: int) -> bytes:
     if download.length is not None and total != download.length:
         raise UpstreamError("TikTok cut the transfer short. Please try again.")
     return b"".join(chunks)
+
+
+def sniff_image(head: bytes) -> str | None:
+    """The raster image type that a file's first bytes announce, or ``None``. SVG, HTML and the like never match."""
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if head[4:8] == b"ftyp" and head[8:12] in (b"avif", b"avis"):
+        return "image/avif"
+    return None
+
+
+class _Prefixed:
+    """A response whose first bytes were already read (to see what they are), handed back before the rest."""
+
+    def __init__(self, response: Any, head: bytes) -> None:
+        self._response = response
+        self._head = head
+        self.headers = response.headers
+
+    def read(self, size: int = CHUNK_SIZE) -> bytes:
+        if self._head:
+            head, self._head = self._head, b""
+            return head
+        return self._response.read(size)
+
+    def close(self) -> None:
+        self._response.close()
+
+
+def _read_head(response: Any, size: int = 16) -> bytes:
+    head = b""
+    while len(head) < size and (chunk := response.read(size - len(head))):
+        head += chunk
+    return head
 
 
 def _extract_images(aweme: Any) -> list[list[str]]:
@@ -491,10 +533,20 @@ class YtDlpBackend:
             log.info("could not open image: %s", exc)
             return None
         content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if content_type in _GENERIC_TYPES:  # a CDN that doesn't label its images: look at the file instead
+            try:
+                head = _read_head(response)
+            except Exception as exc:  # noqa: BLE001 - the caller tries the next candidate
+                log.info("could not read image: %s", exc)
+                response.close()
+                return None
+            content_type = sniff_image(head) or ""
+            response = _Prefixed(response, head)
         ext = _IMAGE_EXT.get(content_type)
         if ext is None:
             response.close()
             return None
+        # The type we report is one of ours, never whatever the CDN claimed.
         return self._stream(response, filename=safe_filename(stem, ext), media_type=content_type)
 
     def _open_cover(self, ydl: yt_dlp.YoutubeDL, info: VideoInfo) -> Download:

@@ -78,7 +78,7 @@ def slugify(text: str, limit: int = 40) -> str:
 
 def post_stem(info: VideoInfo, ref: PostRef) -> str:
     """``2024-03-14_7123456789_pov-you-finally-figured-out``: sorts by date, stays unique by id."""
-    parts = [posted_date(info) or "undated", info.id or ref.id]
+    parts = [posted_date(info) or "undated", ref.id]  # the id that was asked for (validated), not what TikTok reports
     if slug := slugify(info.caption or info.description or info.title):
         parts.append(slug)
     return "_".join(parts)
@@ -311,7 +311,7 @@ def _fetch_post(
                     warnings.append(f"{label}: {exc.message}")
             if not files:
                 raise FormatUnavailable("Nothing could be saved for this post with the chosen options.")
-            record = {**post_record(info), "status": "ok", "files": [f.path for f in files], "warnings": warnings}
+            record = {**post_record(info), "id": ref.id, "status": "ok", "files": [f.path for f in files], "warnings": warnings}
     except BaseException:
         for file in files:
             file.close()
@@ -417,18 +417,28 @@ CSV_COLUMNS = [
 ]  # fmt: skip
 
 
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r", "\n")
+
+
+def _cell(value: Any) -> Any:
+    """Spreadsheets run a cell that starts with = + - or @ as a formula, and captions are written by
+    strangers: ``=HYPERLINK(...)`` as a caption must arrive as text. A leading apostrophe is the usual
+    defence (posts.json keeps every caption exactly as written)."""
+    return "'" + value if isinstance(value, str) and value.startswith(_FORMULA_START) else value
+
+
 def _csv_row(record: Mapping[str, Any]) -> list[Any]:
     stats = record.get("stats") or {}
     sound = record.get("sound") or {}
     author = record.get("author") or {}
     notes = [record["reason"]] if record.get("reason") else list(record.get("warnings") or [])
-    return [
+    return [_cell(value) for value in (
         record.get("id"), record.get("url"), record.get("status"), record.get("type"), record.get("posted_at"),
         record.get("caption"), " ".join(record.get("hashtags") or []), author.get("handle"),
         stats.get("views"), stats.get("likes"), stats.get("comments"), stats.get("shares"), record.get("duration"),
         " – ".join(p for p in (sound.get("title"), ", ".join(sound.get("artists") or [])) if p),
         record.get("photo_count"), "; ".join(record.get("files") or []), "; ".join(notes),
-    ]  # fmt: skip
+    )]  # fmt: skip
 
 
 def manifest_csv(records: Sequence[Mapping[str, Any]]) -> bytes:

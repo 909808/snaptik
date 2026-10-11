@@ -264,6 +264,12 @@ def test_paths_that_could_leave_the_folder_are_refused(tmp_path: Path, path: str
     assert not (tmp_path / "escape.mp4").exists()
 
 
+@pytest.mark.parametrize("mtime", [10**12, 10**30, -10**12])
+def test_a_date_the_file_system_rejects_does_not_fail_the_write(tmp_path: Path, mtime: int) -> None:
+    target = write_file(tmp_path, ArchiveFile.from_bytes("clip.mp4", b"video", mtime=mtime))
+    assert target.read_bytes() == b"video"
+
+
 def test_a_write_that_fails_halfway_leaves_nothing_behind(tmp_path: Path) -> None:
     class Exploding(io.BytesIO):
         def read(self, size: int | None = -1) -> bytes:
