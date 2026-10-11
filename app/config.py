@@ -32,6 +32,16 @@ class Settings:
     ffmpeg_timeout: int = 90
     temp_dir: str | None = None
 
+    # Saving whole profiles: the part TikTok is most likely to push back on, so it is paced and capped.
+    bulk_enabled: bool = True
+    bulk_max_posts: int = 30  # posts in one ZIP from the browser
+    profile_list_limit: int = 90  # posts shown for a profile
+    bulk_delay: float = 3.0  # seconds between posts (varied by up to half either way)
+    bulk_max_backoff: int = 20  # longest pause, in seconds, when TikTok pushes back mid-ZIP
+    bulk_max_seconds: int = 1800  # one ZIP never runs longer than this
+    rate_limit_bulk: int = 6  # ZIPs per hour per client
+    max_concurrent_bulk: int = 1
+
     # Tests only: lets the streaming code talk to a server on localhost.
     allow_private_upstream: bool = False
 
@@ -53,6 +63,16 @@ def _int(name: str, default: int, *, fallback_env: str | None = None) -> int:
         return max(0, int(raw))
     except ValueError:
         raise ValueError(f"SNAPTIK_{name} must be a whole number, got {raw!r}") from None
+
+
+def _float(name: str, default: float) -> float:
+    raw = _env(name)
+    if raw is None:
+        return default
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        raise ValueError(f"SNAPTIK_{name} must be a number, got {raw!r}") from None
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -81,4 +101,12 @@ def load_settings() -> Settings:
         ffmpeg_path=_env("FFMPEG_PATH") or d.ffmpeg_path,
         ffmpeg_timeout=max(1, _int("FFMPEG_TIMEOUT", d.ffmpeg_timeout)),
         temp_dir=_env("TEMP_DIR"),
+        bulk_enabled=_bool("BULK", d.bulk_enabled),
+        bulk_max_posts=max(1, _int("BULK_MAX_POSTS", d.bulk_max_posts)),
+        profile_list_limit=max(1, _int("PROFILE_LIST_LIMIT", d.profile_list_limit)),
+        bulk_delay=max(1.0, _float("BULK_DELAY", d.bulk_delay)),  # a floor: this is what keeps TikTok from blocking us
+        bulk_max_backoff=max(1, _int("BULK_MAX_BACKOFF", d.bulk_max_backoff)),
+        bulk_max_seconds=max(60, _int("BULK_MAX_SECONDS", d.bulk_max_seconds)),
+        rate_limit_bulk=_int("RATE_LIMIT_BULK", d.rate_limit_bulk),
+        max_concurrent_bulk=max(1, _int("MAX_CONCURRENT_BULK", d.max_concurrent_bulk)),
     )

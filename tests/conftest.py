@@ -27,6 +27,8 @@ def media(tmp_path_factory: pytest.TempPathFactory) -> dict[str, bytes]:
     ffmpeg(*tone, "-c:a", "aac", "sound.m4a")
     ffmpeg(*tone, "-c:a", "libmp3lame", "sound.mp3")
     ffmpeg("-f", "lavfi", "-i", "testsrc=size=90x160", "-frames:v", "1", "cover.jpg")
+    ffmpeg("-f", "lavfi", "-i", "testsrc2=size=64x96", "-frames:v", "1", "photo2.jpg")
+    ffmpeg("-f", "lavfi", "-i", "smptebars=size=64x96", "-frames:v", "1", "photo3.png")
     return {p.name: p.read_bytes() for p in folder.iterdir()}
 
 
@@ -43,6 +45,9 @@ def cdn(media: dict[str, bytes]) -> Iterator[Cdn]:
             "/sound.mp3": (200, "audio/mpeg", media["sound.mp3"]),
             "/cover.jpg": (200, "image/jpeg", media["cover.jpg"]),
             "/page.html": (200, "text/html", b"<html>not an image</html>"),
+            "/photo1.jpg": (200, "image/jpeg", media["cover.jpg"]),
+            "/photo2.jpg": (200, "image/jpeg", media["photo2.jpg"]),
+            "/photo3.png": (200, "image/png", media["photo3.png"]),
             "/icon.svg": (200, "image/svg+xml", b"<svg xmlns='http://www.w3.org/2000/svg' onload='alert(1)'/>"),
             "/dead.mp4": (404, "text/plain", b"gone"),
             "/big.bin": (200, "video/mp4", b"x" * (2 * 1024 * 1024)),

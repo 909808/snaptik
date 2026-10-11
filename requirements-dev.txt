@@ -1,3 +1,4 @@
 -r requirements.txt
 pytest>=8
 httpx2  # Starlette's TestClient prefers it over httpx
+ruff>=0.6

@@ -1,25 +1,28 @@
-"""yt-dlp integration: look a post up, then stream the chosen file to the client.
+"""yt-dlp integration: look a post (or a profile) up, then stream the chosen files to the client.
 
 The rest of the app only knows the ``Backend`` protocol, so tests can swap in a
 fake and this file stays the single place that talks to TikTok.
 """
 from __future__ import annotations
 
+import io
 import ipaddress
+import json
 import logging
 import re
 import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 import yt_dlp
+from yt_dlp.extractor.tiktok import TikTokIE
 from yt_dlp.networking import Request
-from yt_dlp.utils import DownloadError
+from yt_dlp.utils import DownloadError, ExtractorError
 
 from .config import Settings
 from .errors import (
@@ -35,21 +38,31 @@ from .errors import (
 from .media import (
     KIND_AUDIO,
     KIND_COVER,
+    KIND_IMAGES,
+    KIND_META,
     VIDEO_KINDS,
     MediaFormat,
+    ProfileListing,
+    ProfilePost,
     VideoInfo,
     audio_plan,
     download_stem,
     parse_info,
+    parse_profile_entry,
+    post_record,
     safe_filename,
     video_candidates,
 )
+from .zipstream import IterReader, ZipStream
 
 log = logging.getLogger(__name__)
 
 CHUNK_SIZE = 64 * 1024
 MAX_FORMAT_ATTEMPTS = 4  # CDN URLs that fail to open before we give up
+MAX_PHOTO_BYTES = 50 * 1024 * 1024
+LISTING_RETRIES = 5  # yt-dlp's own tests use up to 10: TikTok sometimes repeats a page of a profile
 TEMP_PREFIX = "snaptik-"
+TIKTOK_REFERER = "https://www.tiktok.com/"
 
 _AUDIO_TYPES = {"mp3": "audio/mpeg", "m4a": "audio/mp4", "aac": "audio/aac", "ogg": "audio/ogg", "opus": "audio/ogg"}
 # Raster formats only: never relay something like SVG that could carry script under our origin.
@@ -102,6 +115,22 @@ class Download:
         self.close()
 
 
+class Post(Protocol):
+    """One looked-up post, from which each of its files can be opened without another lookup."""
+
+    info: VideoInfo
+
+    def open(self, kind: str) -> Download: ...
+
+    def open_image(self, index: int) -> Download: ...
+
+    def close(self) -> None: ...
+
+    def __enter__(self) -> Post: ...
+
+    def __exit__(self, *exc: object) -> None: ...
+
+
 class Backend(Protocol):
     ffmpeg_available: bool
 
@@ -109,10 +138,15 @@ class Backend(Protocol):
 
     def open_download(self, url: str, kind: str) -> Download: ...
 
+    def open_post(self, url: str) -> Post: ...
+
+    def list_profile(self, handle: str, limit: int) -> ProfileListing: ...
+
 
 # Phrases in yt-dlp / TikTok error messages, checked in this order (see yt_dlp/extractor/tiktok.py).
 _BLOCKED = ("ip address is blocked", "challenge", "captcha", "http error 403", "http error 429", "too many requests")
 _LOGIN = ("requiring login", "log in", "login", "permission to view", "comfortable for some audiences")
+_EMPTY = ("does not have any videos", "any videos posted")
 _GONE = ("video not available", "private", "removed", "no longer available", "not exist", "http error 404")
 
 
@@ -127,6 +161,8 @@ def map_ytdlp_error(exc: BaseException) -> AppError:
         return UpstreamBlocked()
     if any(phrase in text for phrase in _LOGIN):
         return LoginRequired()
+    if any(phrase in text for phrase in _EMPTY):
+        return VideoUnavailable("This account hasn't posted any public videos.")
     if any(phrase in text for phrase in _GONE):
         return VideoUnavailable()
     return UpstreamError()  # includes plain network failures, and "Service Unavailable" is deliberately not "gone"
@@ -169,8 +205,105 @@ def _tag(value: str) -> str:
     return re.sub(r"[\x00-\x1f\x7f]", " ", value).strip()[:120]
 
 
+def read_fully(download: Download, limit: int) -> bytes:
+    """Read a whole (small) download into memory, refusing truncated or oversized transfers."""
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        while chunk := download.read(CHUNK_SIZE):
+            total += len(chunk)
+            if total > limit:
+                raise TooLarge()
+            chunks.append(chunk)
+    finally:
+        download.close()
+    if download.length is not None and total != download.length:
+        raise UpstreamError("TikTok cut the transfer short. Please try again.")
+    return b"".join(chunks)
+
+
+def _extract_images(aweme: Any) -> list[list[str]]:
+    """The photos of a slideshow post, read from TikTok's own post data (yt-dlp skips them).
+
+    Web data has ``imagePost.images[].imageURL.urlList``; the mobile API spells it
+    ``image_post_info.images[].display_image.url_list``. Both are accepted.
+    """
+    if not isinstance(aweme, Mapping):
+        return []
+    post = aweme.get("imagePost") or aweme.get("image_post_info")
+    images = post.get("images") if isinstance(post, Mapping) else None
+    result: list[list[str]] = []
+    for image in images if isinstance(images, list) else []:
+        if not isinstance(image, Mapping):
+            continue
+        urls: list[str] = []
+        for holder_key in ("imageURL", "displayImage", "display_image"):
+            holder = image.get(holder_key)
+            if not isinstance(holder, Mapping):
+                continue
+            for list_key in ("urlList", "url_list"):
+                candidates = holder.get(list_key)
+                if isinstance(candidates, list):
+                    urls += [u for u in candidates if isinstance(u, str) and u.lower().startswith(("http://", "https://"))]
+        if urls:
+            result.append(list(dict.fromkeys(urls)))
+    return result
+
+
+class TikTokPhotosIE(TikTokIE):
+    """yt-dlp's TikTok extractor, plus the photos of slideshow posts (which it does not extract).
+
+    Page fetching, the anti-bot handling and all the parsing stay yt-dlp's; we only keep a
+    piece of the post data that it discards. Photos travel in the info dict as ``snaptik_images``.
+    """
+
+    def _parse_aweme_video_web(self, aweme_detail: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        info = super()._parse_aweme_video_web(aweme_detail, *args, **kwargs)
+        if images := _extract_images(aweme_detail):
+            info["snaptik_images"] = images
+        return info
+
+
+class PostSession:
+    """One yt-dlp lookup of a post. Its files are fetched in the same session (so the CDN gets the
+    cookies and headers it expects) and without looking the post up again, which matters when a
+    whole profile is saved: one TikTok page load per post, not one per file."""
+
+    def __init__(self, backend: YtDlpBackend, ydl: yt_dlp.YoutubeDL, info: VideoInfo) -> None:
+        self._backend = backend
+        self._ydl = ydl
+        self.info = info
+
+    def open(self, kind: str) -> Download:
+        backend, ydl, info = self._backend, self._ydl, self.info
+        if kind == KIND_COVER:
+            return backend._open_cover(ydl, info)
+        if kind == KIND_AUDIO:
+            return backend._open_audio(ydl, info)
+        if kind in VIDEO_KINDS:
+            return backend._open_video(ydl, info, kind)
+        if kind == KIND_IMAGES:
+            return backend._open_photos_zip(ydl, info)
+        if kind == KIND_META:
+            return backend._open_meta(info)
+        raise FormatUnavailable()
+
+    def open_image(self, index: int) -> Download:
+        return self._backend._open_image(self._ydl, self.info, index)
+
+    def close(self) -> None:
+        self._ydl.close()
+
+    def __enter__(self) -> PostSession:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+
 class YtDlpBackend:
-    IE_KEY = "TikTok"  # extract with TikTok's extractor only, never yt-dlp's generic one
+    IE_KEY = TikTokPhotosIE.ie_key()  # TikTok's extractor only, never yt-dlp's generic one
+    USER_IE_KEY = "TikTokUser"  # yt-dlp's built-in profile extractor
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -182,8 +315,8 @@ class YtDlpBackend:
 
     # ------------------------------------------------------------------ lookup
 
-    def _new_ydl(self) -> yt_dlp.YoutubeDL:
-        return yt_dlp.YoutubeDL(
+    def _new_ydl(self, **overrides: Any) -> yt_dlp.YoutubeDL:
+        ydl = yt_dlp.YoutubeDL(
             {
                 "logger": _YdlLogger(),
                 "quiet": True,
@@ -199,8 +332,11 @@ class YtDlpBackend:
                 "check_formats": False,
                 "ignore_no_formats_error": True,
                 "proxy": self.settings.proxy_url,
+                **overrides,
             }
         )
+        ydl.add_info_extractor(TikTokPhotosIE())
+        return ydl
 
     def _extract(self, ydl: yt_dlp.YoutubeDL, url: str) -> Mapping[str, Any]:
         try:
@@ -218,26 +354,70 @@ class YtDlpBackend:
         with self._new_ydl() as ydl:
             return parse_info(self._extract(ydl, url), url)
 
+    def list_profile(self, handle: str, limit: int) -> ProfileListing:
+        """The newest ``limit`` posts of a profile, with captions, dates and stats (no per-post page loads)."""
+        ydl = self._new_ydl(extractor_retries=LISTING_RETRIES)
+        posts: list[ProfilePost] = []
+        name: str | None = None
+        more, warning = False, None
+        try:
+            raw = ydl.extract_info(
+                f"https://www.tiktok.com/@{handle}", download=False, ie_key=self.USER_IE_KEY, process=False
+            )
+            if not isinstance(raw, Mapping):
+                raise VideoUnavailable()
+            try:
+                # Pages are fetched lazily as we iterate, so a small limit costs only a request or two.
+                for entry in raw.get("entries") or []:
+                    if (post := parse_profile_entry(entry, handle)) is None:
+                        continue
+                    if len(posts) >= limit:
+                        more = True
+                        break
+                    posts.append(post)
+                    channel = entry.get("channel")
+                    name = name or (channel if isinstance(channel, str) else None)
+            except (DownloadError, ExtractorError) as exc:
+                if not posts:
+                    raise
+                # A later page failed: the posts already collected are still worth showing.
+                warning = f"TikTok stopped the list early. {map_ytdlp_error(exc).message}"
+                more = True
+        except (DownloadError, ExtractorError) as exc:
+            mapped = map_ytdlp_error(exc)
+            if isinstance(mapped, LoginRequired):
+                mapped = LoginRequired("This account is private, so its posts can't be listed.")
+            raise mapped from exc
+        except AppError:
+            raise
+        except Exception as exc:
+            log.exception("unexpected failure while listing @%s", handle)
+            raise UpstreamError() from exc
+        finally:
+            ydl.close()
+        if not posts:
+            raise VideoUnavailable("This account hasn't posted any public videos.")
+        return ProfileListing(handle=handle, name=name, posts=posts, more=more, warning=warning)
+
     # ---------------------------------------------------------------- download
 
-    def open_download(self, url: str, kind: str) -> Download:
-        # The same YoutubeDL instance does the lookup and the transfer, because it
-        # holds the cookies and headers TikTok's CDN expects.
+    def open_post(self, url: str) -> PostSession:
         ydl = self._new_ydl()
         try:
             info = parse_info(self._extract(ydl, url), url)
-            if kind == KIND_COVER:
-                download = self._open_cover(ydl, info)
-            elif kind == KIND_AUDIO:
-                download = self._open_audio(ydl, info)
-            elif kind in VIDEO_KINDS:
-                download = self._open_video(ydl, info, kind)
-            else:
-                raise FormatUnavailable()
         except BaseException:
             ydl.close()
             raise
-        download.add_cleanup(ydl.close)
+        return PostSession(self, ydl, info)
+
+    def open_download(self, url: str, kind: str) -> Download:
+        session = self.open_post(url)
+        try:
+            download = session.open(kind)
+        except BaseException:
+            session.close()
+            raise
+        download.add_cleanup(session.close)
         return download
 
     def _check_url(self, url: str) -> None:
@@ -303,22 +483,84 @@ class YtDlpBackend:
             return self._stream(response, filename=safe_filename(download_stem(info), "mp4"), media_type="video/mp4")
         raise last_error or UpstreamError()
 
+    def _try_open_image(self, ydl: yt_dlp.YoutubeDL, url: str, stem: str) -> Download | None:
+        """Open an image URL; ``None`` if it fails or is not a raster image."""
+        try:
+            response = self._open_url(ydl, url, {"Referer": TIKTOK_REFERER})
+        except Exception as exc:  # noqa: BLE001 - the caller tries the next candidate
+            log.info("could not open image: %s", exc)
+            return None
+        content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        ext = _IMAGE_EXT.get(content_type)
+        if ext is None:
+            response.close()
+            return None
+        return self._stream(response, filename=safe_filename(stem, ext), media_type=content_type)
+
     def _open_cover(self, ydl: yt_dlp.YoutubeDL, info: VideoInfo) -> Download:
         for url in info.covers[:MAX_FORMAT_ATTEMPTS]:
-            try:
-                response = self._open_url(ydl, url, {"Referer": "https://www.tiktok.com/"})
-            except Exception as exc:  # noqa: BLE001 - try the next candidate
-                log.info("could not open cover: %s", exc)
-                continue
-            content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-            ext = _IMAGE_EXT.get(content_type)
-            if ext is None:
-                response.close()
-                continue
-            return self._stream(
-                response, filename=safe_filename(download_stem(info, "cover"), ext), media_type=content_type
-            )
+            if download := self._try_open_image(ydl, url, download_stem(info, "cover")):
+                return download
         raise FormatUnavailable("This post has no cover image.")
+
+    def _open_image(self, ydl: yt_dlp.YoutubeDL, info: VideoInfo, index: int) -> Download:
+        if not 0 <= index < len(info.images):
+            raise FormatUnavailable("This post has no such photo.")
+        for url in info.images[index][:MAX_FORMAT_ATTEMPTS]:
+            if download := self._try_open_image(ydl, url, download_stem(info, f"photo{index + 1:02d}")):
+                return download
+        raise FormatUnavailable(f"Photo {index + 1} of this post couldn't be downloaded.")
+
+    def _read_image(self, ydl: yt_dlp.YoutubeDL, info: VideoInfo, index: int) -> tuple[str, bytes]:
+        download = self._open_image(ydl, info, index)
+        ext = download.filename.rsplit(".", 1)[-1]
+        return f"{index + 1:02d}.{ext}", read_fully(download, MAX_PHOTO_BYTES)
+
+    def _open_photos_zip(self, ydl: yt_dlp.YoutubeDL, info: VideoInfo) -> Download:
+        """All photos of a slideshow as a streamed ZIP (plus the caption/details)."""
+        if not info.images:
+            raise FormatUnavailable("This post has no photos.")
+        first = self._read_image(ydl, info, 0)  # fail with a real error before any bytes are sent
+
+        def build() -> Iterator[bytes]:
+            archive = ZipStream()
+            skipped: list[int] = []
+            try:
+                for index in range(len(info.images)):
+                    try:
+                        name, data = first if index == 0 else self._read_image(ydl, info, index)
+                    except AppError as exc:
+                        log.info("photo %d of %s skipped: %s", index + 1, info.id, exc.message)
+                        skipped.append(index + 1)
+                        continue
+                    yield from archive.add_bytes(name, data, info.timestamp)
+                details = json.dumps(post_record(info), ensure_ascii=False, indent=2).encode()
+                yield from archive.add_bytes("details.json", details, info.timestamp)
+                if skipped:
+                    note = ("These photos could not be downloaded: " + ", ".join(map(str, skipped)) + "\n").encode()
+                    yield from archive.add_bytes("SKIPPED.txt", note, info.timestamp)
+                yield from archive.finish()
+            finally:
+                archive.close()
+
+        stream = build()
+        return Download(
+            filename=safe_filename(download_stem(info, "photos"), "zip"),
+            media_type="application/zip",
+            length=None,
+            reader=IterReader(stream).read,
+            cleanups=[stream.close],
+        )
+
+    def _open_meta(self, info: VideoInfo) -> Download:
+        data = json.dumps(post_record(info), ensure_ascii=False, indent=2).encode()
+        stream = io.BytesIO(data)
+        return Download(
+            filename=safe_filename(download_stem(info, "details"), "json"),
+            media_type="application/json",
+            length=len(data),
+            reader=stream.read,
+        )
 
     def _open_audio(self, ydl: yt_dlp.YoutubeDL, info: VideoInfo) -> Download:
         plan = audio_plan(info, ffmpeg_available=self.ffmpeg_available)

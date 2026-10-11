@@ -153,6 +153,34 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
             response.set_cookie(f"dl_{n}", "1", max_age=30, path="/", samesite="lax")
         return response
 
+    @app.get("/api/bulk")
+    async def bulk(
+        request: Request,
+        user: str = Query(..., max_length=100),
+        ids: str = Query(..., max_length=2000),
+        what: str = Query("media", max_length=40),
+        n: str = Query(..., max_length=32),
+    ) -> Response:
+        """Save several posts of one profile into a single ZIP, one at a time and politely paced."""
+        service.check_rate("bulk", _client_ip(request))
+        run = service.start_bulk(user, ids.split(","), what, n)
+        response = StreamingResponse(
+            run.stream(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{run.filename}"', "Cache-Control": "no-store"},
+            background=BackgroundTask(run.close),
+        )
+        response.set_cookie(f"dl_{n}", "1", max_age=30, path="/", samesite="lax")  # "the download has started"
+        return response
+
+    @app.get("/api/bulk/progress")
+    async def bulk_progress(n: str = Query(..., max_length=32)) -> JSONResponse:
+        return JSONResponse(service.bulk_progress(n), headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/bulk/stop")
+    async def bulk_stop(n: str = Query(..., max_length=32)) -> JSONResponse:
+        return JSONResponse(service.stop_bulk(n), headers={"Cache-Control": "no-store"})
+
     # HEAD is allowed too: uptime monitors and link checkers commonly use it.
     @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
     async def healthz() -> dict[str, str]:

@@ -81,8 +81,8 @@ def make_backend(result: dict[str, Any], *, failure: Exception | None = None, **
     class Backend(YtDlpBackend):
         IE_KEY = StandInTikTokIE.ie_key()
 
-        def _new_ydl(self):  # type: ignore[no-untyped-def]
-            ydl = super()._new_ydl()
+        def _new_ydl(self, **overrides):  # type: ignore[no-untyped-def]
+            ydl = super()._new_ydl(**overrides)
             ydl.add_info_extractor(StandInTikTokIE())
             return ydl
 
@@ -397,12 +397,12 @@ def test_only_raster_images_are_relayed_as_covers(cdn: Cdn, media: dict[str, byt
     assert cdn.fetched() == ["/icon.svg", "/cover.jpg"]
 
 
-def test_the_response_is_registered_before_the_yt_dlp_session_that_owns_it(cdn: Cdn) -> None:
+def test_the_response_is_registered_before_the_post_session_that_owns_it(cdn: Cdn) -> None:
     """Downloads close cleanups in registration order, so this makes the response close first."""
     download = make_backend(tiktok_like(cdn)).open_download(CANONICAL, "video")
     try:
         owners = [type(getattr(fn, "__self__", None)).__name__ for fn in download._cleanups]
-        assert owners[-1] == "YoutubeDL" and "YoutubeDL" not in owners[:-1]
+        assert owners[-1] == "PostSession" and "PostSession" not in owners[:-1]
         assert len(owners) == 2  # the response, then the session
     finally:
         download.close()

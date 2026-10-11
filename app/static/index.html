@@ -21,6 +21,7 @@
     <symbol id="i-video" viewBox="0 0 24 24"><rect x="2" y="5" width="14" height="14" rx="2"/><path d="m22 8-6 4 6 4V8z"/></symbol>
     <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></symbol>
     <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></symbol>
     <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4m11.4-11.4 1.4-1.4"/></symbol>
     <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol>
   </svg>
@@ -65,6 +66,7 @@
           </button>
         </form>
         <p id="status" class="status" role="status" aria-live="polite" hidden></p>
+        <p class="formats">Video, photo and profile links all work. Short links too.</p>
       </section>
 
       <section id="result" class="card result" aria-labelledby="r-title" hidden>
@@ -78,7 +80,52 @@
           <p id="r-stats" class="stats"></p>
           <p id="r-note" class="note" hidden></p>
           <div id="r-actions" class="actions"></div>
-          <button id="r-reset" class="link-btn" type="button">Download another video</button>
+          <div class="links">
+            <button id="r-back" class="link-btn" type="button" hidden></button>
+            <button id="r-reset" class="link-btn" type="button">Download another video</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="profile" class="card profile" aria-labelledby="p-title" hidden>
+        <div class="profile-head">
+          <div>
+            <p id="p-handle" class="eyebrow"></p>
+            <h2 id="p-title" tabindex="-1"></h2>
+            <p id="p-count" class="stats"></p>
+          </div>
+          <button id="p-reset" class="link-btn" type="button">Start over</button>
+        </div>
+        <p id="p-warning" class="note" hidden></p>
+
+        <div id="p-bulk">
+          <fieldset class="options">
+            <legend>What to save</legend>
+            <label><input type="checkbox" id="w-media" checked> Videos and photos</label>
+            <label><input type="checkbox" id="w-audio"> Sounds (MP3)</label>
+            <label><input type="checkbox" id="w-cover"> Cover images</label>
+          </fieldset>
+          <div class="selectbar">
+            <button id="p-all" class="link-btn" type="button">Select the newest 30</button>
+            <button id="p-none" class="link-btn" type="button">Clear</button>
+            <span id="p-selected" class="stats" aria-live="polite"></span>
+          </div>
+        </div>
+
+        <ul id="p-list" class="post-list"></ul>
+
+        <div id="p-actions" class="bulk-actions">
+          <button id="p-download" class="btn primary" type="button" disabled>
+            <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+            <span class="label">Download as ZIP</span>
+          </button>
+          <p id="p-hint" class="hint"></p>
+        </div>
+
+        <div id="p-progress" class="progress" hidden>
+          <progress id="p-bar" max="1" value="0" aria-label="Progress of the ZIP"></progress>
+          <p id="p-progress-text" class="progress-text" role="status" aria-live="polite"></p>
+          <button id="p-stop" class="btn" type="button">Stop and keep what's done</button>
         </div>
       </section>
 
@@ -128,7 +175,15 @@
         </details>
         <details class="faq">
           <summary>Can I download photo slideshows?</summary>
-          <p>Only the sound and the cover image for now. Saving the individual photos isn't supported yet.</p>
+          <p>Yes: all the photos come as one ZIP, and the sound and cover are separate downloads. If a particular post doesn't offer its photos, you'll still get the sound and cover.</p>
+        </details>
+        <details class="faq">
+          <summary>Can I save everything on someone's profile?</summary>
+          <p>Paste the profile link to see their recent posts, tick the ones you want and download them as a ZIP, up to a few dozen at a time. Posts are fetched one by one with a short pause so TikTok doesn't block the server, so it takes a while. For a complete archive, use the command-line tool described in the project README: it resumes where it left off.</p>
+        </details>
+        <details class="faq">
+          <summary>Can I save captions and comments?</summary>
+          <p>Captions, yes: every post has a "Caption &amp; details" file, and ZIPs include a spreadsheet and JSON listing each post's caption, date, hashtags, stats and sound. Comments, no: TikTok doesn't offer them in a form this tool can read reliably. Your own comments are in TikTok's "Download your data" in Settings.</p>
         </details>
         <details class="faq">
           <summary>What am I allowed to download?</summary>

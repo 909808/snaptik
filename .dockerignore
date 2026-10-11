@@ -12,3 +12,5 @@ README.md
 Dockerfile
 docker-compose.yml
 requirements-dev.txt
+.ruff_cache
+tiktok-*

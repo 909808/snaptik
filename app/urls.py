@@ -33,17 +33,19 @@ _BARE_URL_IN_TEXT = re.compile(
 _ID = r"(?P<id>\d{6,25})"
 _VIDEO_PATH = re.compile(rf"^/@(?P<user>[A-Za-z0-9_.\-]{{0,64}})/(?:video|photo)/{_ID}/?$")
 _ID_PATH = re.compile(rf"^/(?:embed(?:/v2)?|share/(?:video|photo)|v)/{_ID}(?:\.html)?/?$")
+_PROFILE_PATH = re.compile(r"^/@(?P<handle>[A-Za-z0-9_.\-]{1,100})/?$")
 _SHORT_ROOT = re.compile(r"^/(?P<code>[A-Za-z0-9_\-]{3,40})/?$")
 _SHORT_T = re.compile(r"^/t/(?P<code>[A-Za-z0-9_\-]{3,40})/?$")
 
 
 @dataclass(frozen=True, slots=True)
 class Target:
-    """Either a concrete video (``video_id``) or a short link still to be resolved."""
+    """A concrete video (``video_id``), a profile (``profile``), or a short link still to be resolved."""
 
     video_id: str | None = None
     user: str | None = None
     short_url: str | None = None
+    profile: str | None = None
 
     @property
     def is_short(self) -> bool:
@@ -51,7 +53,9 @@ class Target:
 
     @property
     def canonical_url(self) -> str:
-        """The one URL shape yt-dlp's TikTok extractor accepts (``www.`` host required)."""
+        """The one URL shape yt-dlp's TikTok extractors accept (``www.`` host required)."""
+        if self.profile is not None:
+            return f"https://www.tiktok.com/@{self.profile}"
         if self.video_id is None:
             raise ValueError("short links have no canonical URL until they are resolved")
         return f"https://www.tiktok.com/@{self.user or '_'}/video/{self.video_id}"
@@ -89,6 +93,8 @@ def parse_tiktok_url(raw: str) -> Target:
         return Target(video_id=match["id"])
     if _SHORT_T.match(path) or (host in _SHORT_HOSTS and _SHORT_ROOT.match(path)):
         return Target(short_url=f"https://{host}{path}")
+    if match := _PROFILE_PATH.match(path):
+        return Target(profile=match["handle"])
     raise InvalidURL()
 
 
@@ -126,7 +132,7 @@ def _follow_redirect(url: str, client: httpx.Client) -> str:
 
 
 def resolve_target(text: str, client: httpx.Client) -> Target:
-    """Parse the input and follow short links (vm./vt./``/t/``) to a concrete video.
+    """Parse the input and follow short links (vm./vt./``/t/``) to a concrete video or profile.
 
     Redirects are followed by hand so that every hop is re-validated: a short link
     that redirects anywhere outside TikTok is rejected rather than fetched.

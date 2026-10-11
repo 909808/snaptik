@@ -9,12 +9,14 @@ services:
     environment:
       SNAPTIK_RATE_LIMIT_LOOKUP: "20"     # lookups per minute per client
       SNAPTIK_RATE_LIMIT_DOWNLOAD: "30"   # downloads per minute per client
+      SNAPTIK_RATE_LIMIT_BULK: "6"        # ZIPs of many posts (from a profile) per hour per client
+      # SNAPTIK_BULK: "0"                 # turn those ZIPs off (profiles can still be browsed)
       # SNAPTIK_PROXY_URL: "http://user:pass@proxy.example:3128"   # if TikTok blocks your server's IP
       # FORWARDED_ALLOW_IPS: "*"          # trust X-Forwarded-For from a reverse proxy so limits see real client IPs
     restart: unless-stopped
     read_only: true
     tmpfs:
-      - /tmp:size=512m,mode=1777          # MP3 conversion scratch space
+      - /tmp:size=512m,mode=1777          # scratch space: MP3 conversion, and each post while a ZIP is built
     cap_drop:
       - ALL
     security_opt:

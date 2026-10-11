@@ -64,6 +64,19 @@ def test_page_has_no_inline_script_or_style_so_the_strict_csp_holds(client: Test
     assert "<script>" not in html and "onclick=" not in html and "style=" not in html
 
 
+def test_the_page_script_never_turns_untrusted_text_into_markup(client: TestClient) -> None:
+    """Captions, names and titles come from TikTok users: they must only ever reach the page as text."""
+    script = client.get("/static/app.js").text
+    for dangerous in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"):
+        assert dangerous not in script, dangerous
+
+
+def test_page_has_the_profile_controls(client: TestClient) -> None:
+    html = client.get("/").text
+    for element_id in ("profile", "p-list", "p-download", "p-stop", "p-bar", "w-media", "w-audio", "w-cover", "r-back"):
+        assert f'id="{element_id}"' in html, element_id
+
+
 def test_api_docs_are_not_exposed(client: TestClient) -> None:
     assert all(client.get(p).status_code == 404 for p in ("/docs", "/redoc", "/openapi.json"))
 
@@ -80,8 +93,8 @@ def test_lookup_describes_the_post_and_its_downloads(client: TestClient) -> None
     assert data["author"] == {"name": "Scout", "handle": "scout2015"}
     assert data["duration"] == 15 and data["note"] is None
     assert data["stats"]["views"] == 1_234_567
-    assert [d["kind"] for d in data["downloads"]] == ["video", "video_sd", "audio", "cover", "video_wm"]
-    assert [d["primary"] for d in data["downloads"]] == [True, False, False, False, False]
+    assert [d["kind"] for d in data["downloads"]] == ["video", "video_sd", "audio", "cover", "video_wm", "meta"]
+    assert [d["primary"] for d in data["downloads"]] == [True, False, False, False, False, False]
 
 
 def test_download_links_point_back_at_the_api_with_the_canonical_url(client: TestClient) -> None:
@@ -163,7 +176,7 @@ def test_slideshow_posts_explain_what_can_be_downloaded() -> None:
     app = create_app(Settings(), FakeBackend(info))
     with TestClient(app) as client:
         data = lookup(client).json()
-    assert [d["kind"] for d in data["downloads"]] == ["audio", "cover"]
+    assert [d["kind"] for d in data["downloads"]] == ["audio", "cover", "meta"]
     assert "slideshow" in data["note"]
 
 
@@ -311,13 +324,36 @@ def test_the_same_video_with_a_different_handle_shares_one_cache_entry() -> None
 
 
 def test_a_client_that_disconnects_mid_download_releases_everything(unused_tcp_port: int) -> None:
-    """Runs a real uvicorn server: TestClient cannot simulate a dropped connection."""
+    """Runs a real uvicorn server: TestClient cannot simulate a dropped connection.
+
+    The source is slow (5 ms per 64 KB read), so a server that kept going for a client that had left
+    would need seconds to drain it. It must stop almost at once, having read only a small part."""
     import threading
     import time
 
     import uvicorn
 
-    backend = FakeBackend(payload=b"x" * 30_000_000)
+    from app.backend import Download
+
+    reads = 0
+    total_reads = 480  # about 30 MB
+
+    class SlowBackend(FakeBackend):
+        def open_download(self, url: str, kind: str) -> Download:
+            self.open_calls.append((url, kind))
+
+            def read(size: int) -> bytes:
+                nonlocal reads
+                if reads >= total_reads:
+                    return b""
+                reads += 1
+                time.sleep(0.005)
+                return b"x" * size
+
+            return Download(filename="slow.mp4", media_type="video/mp4", length=None, reader=read,
+                            cleanups=[self._count_close])  # fmt: skip
+
+    backend = SlowBackend()
     app = create_app(Settings(max_concurrent_downloads=1), backend)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=unused_tcp_port, log_level="error"))
     thread = threading.Thread(target=server.run, daemon=True)
@@ -333,12 +369,13 @@ def test_a_client_that_disconnects_mid_download_releases_everything(unused_tcp_p
                         params={"url": CANONICAL, "kind": "video"}) as response,
         ):  # fmt: skip
             assert response.status_code == 200
-            assert next(response.iter_bytes(65536))
-        # leaving the block closed the socket after reading only the first chunk
+            assert next(response.iter_raw())
+        # leaving the block closed the socket after the first network read
         deadline = time.time() + 10
         while backend.closed == 0 and time.time() < deadline:
             time.sleep(0.05)
         assert backend.closed == 1, "upstream/temp resources were not released after the client left"
+        assert reads < total_reads / 2, f"the server kept reading for a client that had gone ({reads} of {total_reads})"
         assert app.state.service._download_gate.acquire(), "the concurrency slot leaked"
     finally:
         server.should_exit = True

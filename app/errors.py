@@ -82,3 +82,15 @@ class ConversionFailed(AppError):
     status_code = 502
     code = "conversion_failed"
     default_message = "Couldn't convert the audio. Please try again."
+
+
+class Disabled(AppError):
+    status_code = 403
+    code = "disabled"
+    default_message = "This feature is turned off on this server."
+
+
+class UnknownJob(AppError):
+    status_code = 404
+    code = "unknown_job"
+    default_message = "That download isn't running (it may have finished a while ago)."

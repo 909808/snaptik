@@ -4,7 +4,10 @@
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const SVG_NS = "http://www.w3.org/2000/svg";
-  const ICONS = { video: "i-video", video_sd: "i-video", video_wm: "i-video", audio: "i-music", cover: "i-image" };
+  const ICONS = {
+    video: "i-video", video_sd: "i-video", video_wm: "i-video",
+    audio: "i-music", cover: "i-image", images: "i-image", meta: "i-file",
+  };
 
   const form = $("#dl-form");
   const input = $("#url");
@@ -12,9 +15,26 @@
   const goLabel = $(".label", goButton);
   const pasteButton = $("#paste");
   const statusEl = $("#status");
+  const toastEl = $("#toast");
+
   const result = $("#result");
   const actions = $("#r-actions");
-  const toastEl = $("#toast");
+  const backButton = $("#r-back");
+
+  const profile = $("#profile");
+  const postList = $("#p-list");
+  const downloadButton = $("#p-download");
+  const stopButton = $("#p-stop");
+  const progressBox = $("#p-progress");
+  const progressBar = $("#p-bar");
+  const progressText = $("#p-progress-text");
+  const wants = { media: $("#w-media"), audio: $("#w-audio"), cover: $("#w-cover") };
+
+  const state = {
+    profile: null, // the profile being shown; kept so "back to profile" needs no new request
+    selected: new Set(), // ids ticked in the post list
+    job: null, // id of the ZIP that is being built right now
+  };
 
   class ApiError extends Error {
     constructor(message, status, code) {
@@ -28,6 +48,7 @@
 
   const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
   const looksLikeTikTok = (text) => /(^|[\s/.@])tiktok(v)?\.com\//i.test(text);
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   function formatDuration(totalSeconds) {
     const minutes = Math.floor(totalSeconds / 60);
@@ -35,10 +56,24 @@
     return `${minutes}:${String(seconds).padStart(2, "0")}`;
   }
 
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+  function formatWait(seconds) {
+    return seconds < 90 ? plural(Math.max(5, Math.round(seconds / 5) * 5), "second") : plural(Math.round(seconds / 60), "minute");
+  }
+
+  /* Unguessable ids: a download's id is also what lets the page watch and stop it. */
+  function randomId(length) {
+    const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+    const bytes = new Uint8Array(length);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
+  }
+
   function el(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
-    if (text !== undefined) node.textContent = text; // textContent only: titles come from TikTok users
+    if (text !== undefined) node.textContent = text; // textContent only: captions come from TikTok users
     return node;
   }
 
@@ -69,7 +104,12 @@
     toastEl.textContent = message;
     toastEl.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { toastEl.hidden = true; }, 6000);
+    toastTimer = setTimeout(() => { toastEl.hidden = true; }, 7000);
+  }
+
+  function show(section) {
+    result.hidden = section !== result;
+    profile.hidden = section !== profile;
   }
 
   // -------------------------------------------------------------------- API
@@ -96,7 +136,7 @@
 
   let controller = null;
 
-  async function lookup(text) {
+  async function lookup(text, { from = null } = {}) {
     const value = text.trim();
     if (!value) {
       setStatus("Paste a TikTok link first.", "error");
@@ -107,7 +147,6 @@
     const mine = (controller = new AbortController());
     setBusy(true);
     setStatus("");
-    result.hidden = true;
     try {
       const data = await request("/api/info", {
         method: "POST",
@@ -115,7 +154,8 @@
         body: JSON.stringify({ url: value }),
         signal: mine.signal,
       });
-      render(data);
+      if (data.type === "profile") renderProfile(data);
+      else renderPost(data, from);
     } catch (error) {
       if (error.name !== "AbortError") setStatus(error.message, "error");
     } finally {
@@ -123,7 +163,7 @@
     }
   }
 
-  // ----------------------------------------------------------------- render
+  // ------------------------------------------------------------ one post
 
   function buildAction(item) {
     const link = el("a", `btn action${item.primary ? " primary" : ""}`);
@@ -136,7 +176,7 @@
     return link;
   }
 
-  function render(data) {
+  function renderPost(data, from) {
     const author = [data.author?.name, data.author?.handle && `@${data.author.handle}`].filter(Boolean);
     $("#r-author").textContent = author.join(" · ") || "TikTok";
     $("#r-title").textContent = data.description || data.title;
@@ -154,68 +194,80 @@
     if (data.duration) duration.textContent = formatDuration(data.duration);
 
     const stats = data.stats || {};
-    $("#r-stats").textContent = [["views", "views"], ["likes", "likes"], ["comments", "comments"], ["shares", "shares"]]
-      .filter(([key]) => Number.isFinite(stats[key]))
-      .map(([key, label]) => `${compact.format(stats[key])} ${label}`)
+    $("#r-stats").textContent = ["views", "likes", "comments", "shares"]
+      .filter((key) => Number.isFinite(stats[key]))
+      .map((key) => `${compact.format(stats[key])} ${key}`)
       .join(" · ");
 
     const note = $("#r-note");
     note.hidden = !data.note;
     note.textContent = data.note || "";
 
+    backButton.hidden = !from;
+    if (from) backButton.textContent = `← Back to @${from.handle}`;
+
     actions.replaceChildren(...data.downloads.map(buildAction));
-    result.hidden = false;
+    show(result);
     $("#r-title").focus({ preventScroll: true });
     result.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  // --------------------------------------------------------------- download
+  // -------------------------------------------------------- the download frame
 
-  /* The file is fetched by a hidden iframe so the browser streams it straight to disk
-     (no buffering in memory) and our own page never navigates away.
-       - Success: the response is an attachment, so the iframe never fires "load". The
-         server sets a short-lived cookie when the response starts; we watch for it to
-         know the download has begun.
+  /* Files are fetched by a hidden iframe so the browser streams them straight to disk (no
+     buffering in memory) and our own page never navigates away.
+       - Success: the response is an attachment, so the iframe never fires "load". The server
+         sets a short-lived cookie when the response starts; watching for it tells us the
+         download has begun.
        - Failure: the response is our JSON error, which does fire "load"; we show it. */
-  function startDownload(link) {
-    if (link.getAttribute("aria-busy") === "true") return;
-    const nonce = Math.random().toString(36).slice(2, 12).padEnd(8, "0");
-    const url = new URL(link.href);
-    url.searchParams.set("n", nonce);
-
-    const title = $(".a-title", link);
-    const originalTitle = title.textContent;
-    link.setAttribute("aria-busy", "true");
-    title.textContent = "Preparing…";
-
+  function fetchInFrame(href, { onStarted, onError } = {}) {
+    const url = new URL(href, location.origin);
+    let nonce = url.searchParams.get("n");
+    if (!nonce) {
+      nonce = randomId(10);
+      url.searchParams.set("n", nonce);
+    }
     const frame = document.createElement("iframe");
     frame.hidden = true;
     frame.title = "Download";
     frame.src = url.href;
 
     let finished = false;
-    const finish = () => {
+    const finish = (message) => {
       if (finished) return;
       finished = true;
       clearInterval(poll);
       clearTimeout(giveUp);
-      link.removeAttribute("aria-busy");
-      title.textContent = originalTitle;
       document.cookie = `dl_${nonce}=; Max-Age=0; Path=/`;
       setTimeout(() => frame.remove(), 60000); // leave it be while the browser takes over the transfer
+      if (message) onError?.(message);
+      else onStarted?.();
     };
     const poll = setInterval(() => {
       if (document.cookie.includes(`dl_${nonce}=`)) finish();
     }, 250);
-    const giveUp = setTimeout(finish, 120000);
+    const giveUp = setTimeout(() => finish(), 120000);
 
     frame.addEventListener("load", () => {
       let message = "";
       try { message = JSON.parse(frame.contentDocument.body.textContent).error.message; } catch { /* not our error */ }
       if (message) toast(message);
-      finish();
+      finish(message);
     });
     document.body.append(frame);
+  }
+
+  function startDownload(link) {
+    if (link.getAttribute("aria-busy") === "true") return;
+    const title = $(".a-title", link);
+    const original = title.textContent;
+    link.setAttribute("aria-busy", "true");
+    title.textContent = "Preparing…";
+    const restore = () => {
+      link.removeAttribute("aria-busy");
+      title.textContent = original;
+    };
+    fetchInFrame(link.href, { onStarted: restore, onError: restore });
   }
 
   actions.addEventListener("click", (event) => {
@@ -224,6 +276,227 @@
     if (!link || !plain) return; // let "open in new tab" and friends behave normally
     event.preventDefault();
     startDownload(link);
+  });
+
+  // ------------------------------------------------------------- a profile
+
+  const wantedKinds = () => Object.keys(wants).filter((key) => wants[key].checked);
+  const bulkOptions = () => state.profile?.bulk || {};
+
+  function metaLine(post) {
+    return [
+      post.date,
+      post.duration ? formatDuration(post.duration) : null,
+      Number.isFinite(post.views) ? `${compact.format(post.views)} views` : null,
+    ].filter(Boolean).join(" · ");
+  }
+
+  function buildPost(post, selectable) {
+    const item = el("li", "post");
+    const pick = el("label", "post-pick");
+    if (selectable) {
+      const box = el("input");
+      box.type = "checkbox";
+      box.value = post.id;
+      box.checked = state.selected.has(post.id);
+      pick.append(box);
+    }
+    const thumb = el("img", "post-thumb");
+    thumb.alt = "";
+    thumb.loading = "lazy";
+    thumb.referrerPolicy = "no-referrer";
+    if (post.thumbnail) thumb.src = post.thumbnail;
+    const text = el("span", "post-text");
+    text.append(el("span", "post-caption", post.caption || "(no caption)"), el("span", "post-meta", metaLine(post)));
+    pick.append(thumb, text);
+
+    const open = el("button", "link-btn open", "Open");
+    open.type = "button";
+    open.dataset.url = post.url;
+    item.append(pick, open);
+    return item;
+  }
+
+  function renderProfile(data) {
+    if (state.profile?.handle !== data.handle) state.selected = new Set();
+    state.profile = data;
+
+    $("#p-handle").textContent = `@${data.handle}`;
+    $("#p-title").textContent = data.name || data.handle;
+    const count = data.posts.length;
+    $("#p-count").textContent = `${plural(count, "post")}${data.more ? ", the most recent ones" : ""}`;
+
+    const enabled = Boolean(data.bulk?.enabled);
+    const warning = $("#p-warning");
+    const notice = data.warning || (enabled ? "" : "Saving many posts at once is turned off on this server. Open a post to download it.");
+    warning.hidden = !notice;
+    warning.textContent = notice;
+
+    $("#p-bulk").hidden = !enabled;
+    $("#p-actions").hidden = !enabled;
+    postList.classList.toggle("no-select", !enabled);
+    postList.replaceChildren(...data.posts.map((post) => buildPost(post, enabled)));
+    postList.scrollTop = 0;
+
+    resetProgress();
+    updateSelection();
+    show(profile);
+    $("#p-title").focus({ preventScroll: true });
+    profile.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function syncBoxes() {
+    for (const box of postList.querySelectorAll('input[type="checkbox"]')) box.checked = state.selected.has(box.value);
+  }
+
+  function updateSelection() {
+    if (!state.profile) return;
+    const { max_posts: max = 30, delay = 3 } = bulkOptions();
+    const n = state.selected.size;
+    $("#p-selected").textContent = `${n} selected (up to ${max} per ZIP)`;
+    $("#p-all").textContent = `Select the newest ${Math.min(max, state.profile.posts.length)}`;
+    $(".label", downloadButton).textContent = n ? `Download ${plural(n, "post")} as ZIP` : "Download as ZIP";
+    downloadButton.disabled = !n || !wantedKinds().length || Boolean(state.job);
+    $("#p-hint").textContent = n
+      ? `Posts are fetched one at a time, with a pause of about ${plural(delay, "second")} between them so TikTok doesn't block this server. ` +
+        `${plural(n, "post")} will take roughly ${formatWait(n * (delay + 4))}. For a complete archive of a big profile, use the command-line tool in the README.`
+      : "Tick the posts you want, then download them together.";
+  }
+
+  postList.addEventListener("change", (event) => {
+    const box = event.target;
+    if (!(box instanceof HTMLInputElement) || box.type !== "checkbox") return;
+    const { max_posts: max = 30 } = bulkOptions();
+    if (box.checked && state.selected.size >= max) {
+      box.checked = false;
+      toast(`A ZIP holds up to ${max} posts. Download this batch first, then pick the next one.`);
+      return;
+    }
+    if (box.checked) state.selected.add(box.value);
+    else state.selected.delete(box.value);
+    updateSelection();
+  });
+
+  postList.addEventListener("click", (event) => {
+    const button = event.target.closest("button.open");
+    if (!button) return;
+    input.value = button.dataset.url;
+    lookup(button.dataset.url, { from: state.profile });
+  });
+
+  $("#p-all").addEventListener("click", () => {
+    const { max_posts: max = 30 } = bulkOptions();
+    state.selected = new Set(state.profile.posts.slice(0, max).map((post) => post.id));
+    syncBoxes();
+    updateSelection();
+  });
+
+  $("#p-none").addEventListener("click", () => {
+    state.selected.clear();
+    syncBoxes();
+    updateSelection();
+  });
+
+  for (const box of Object.values(wants)) box.addEventListener("change", updateSelection);
+
+  backButton.addEventListener("click", () => {
+    if (state.profile) renderProfile(state.profile);
+  });
+
+  // ------------------------------------------------------------ the ZIP run
+
+  function resetProgress() {
+    progressBox.hidden = true;
+    stopButton.hidden = false;
+    stopButton.disabled = false;
+    stopButton.textContent = "Stop and keep what's done";
+    progressBar.max = 1;
+    progressBar.value = 0;
+    progressText.textContent = "";
+  }
+
+  function showProgress(snap) {
+    progressBox.hidden = false;
+    progressBar.max = Math.max(1, snap.total);
+    progressBar.value = snap.done;
+    const parts = [`${snap.done} of ${snap.total} posts`];
+    if (snap.saved) parts.push(`${snap.saved} saved`);
+    if (snap.skipped) parts.push(`${snap.skipped} unavailable`);
+    if (snap.failed) parts.push(`${snap.failed} failed`);
+    progressText.textContent = parts.join(" · ") + (snap.message ? `. ${snap.message}` : "");
+  }
+
+  function summary(snap) {
+    const tail = [snap.skipped && `${snap.skipped} unavailable (private or removed)`, snap.failed && `${snap.failed} failed`]
+      .filter(Boolean).join(", ");
+    if (snap.state === "done") {
+      return `Done: ${snap.saved} saved${tail ? `, ${tail}` : ""}. The ZIP is in your downloads; posts.csv in it lists every caption.`;
+    }
+    if (snap.state === "stopped") {
+      return `Stopped: ${snap.saved} saved${tail ? `, ${tail}` : ""}. The ZIP in your downloads has what was finished.`;
+    }
+    return `Stopped early: ${snap.message}`;
+  }
+
+  function endRun(snap) {
+    state.job = null;
+    if (snap) {
+      progressBar.value = progressBar.max;
+      progressText.textContent = summary(snap);
+      stopButton.hidden = true;
+    } else {
+      progressBox.hidden = true;
+    }
+    updateSelection();
+  }
+
+  async function watch(job) {
+    let misses = 0;
+    while (state.job === job) {
+      await sleep(1500);
+      if (state.job !== job) return;
+      try {
+        const snap = await request(`/api/bulk/progress?n=${encodeURIComponent(job)}`);
+        misses = 0;
+        showProgress(snap);
+        if (snap.state !== "running") return endRun(snap);
+      } catch (error) {
+        if (error.status === 404 && ++misses >= 3) {
+          toast("The download didn't start. Please try again.");
+          return endRun(null);
+        }
+      }
+    }
+  }
+
+  downloadButton.addEventListener("click", () => {
+    if (state.job) return;
+    const ids = [...postList.querySelectorAll('input[type="checkbox"]:checked')].map((box) => box.value); // newest first
+    const what = wantedKinds().join(",");
+    if (!ids.length || !what) return;
+
+    const job = randomId(20);
+    const url = new URL("/api/bulk", location.origin);
+    url.search = new URLSearchParams({ user: state.profile.handle, ids: ids.join(","), what, n: job }).toString();
+
+    state.job = job;
+    resetProgress();
+    showProgress({ total: ids.length, done: 0, saved: 0, skipped: 0, failed: 0, message: "Starting…" });
+    progressBox.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    updateSelection();
+    fetchInFrame(url.href, { onError: () => endRun(null) }); // the server refused: its message is already in a toast
+    watch(job);
+  });
+
+  stopButton.addEventListener("click", async () => {
+    if (!state.job) return;
+    stopButton.disabled = true;
+    stopButton.textContent = "Stopping…";
+    try {
+      await request(`/api/bulk/stop?n=${encodeURIComponent(state.job)}`, { method: "POST" });
+    } catch (error) {
+      toast(error.message);
+    }
   });
 
   // ------------------------------------------------------------------ wiring
@@ -254,13 +527,19 @@
     pasteButton.hidden = true; // needs a secure context and a browser that allows clipboard reads
   }
 
-  $("#r-reset").addEventListener("click", () => {
-    result.hidden = true;
+  function startOver() {
+    if (state.job && !confirm("A ZIP is still being built. Start over anyway? It keeps running; use Stop first to end it.")) return;
+    show(null);
+    state.profile = null;
+    state.selected = new Set();
     input.value = "";
     setStatus("");
     window.scrollTo({ top: 0, behavior: "smooth" });
     input.focus({ preventScroll: true });
-  });
+  }
+
+  $("#r-reset").addEventListener("click", startOver);
+  $("#p-reset").addEventListener("click", startOver);
 
   $("#theme-toggle").addEventListener("click", () => {
     const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";

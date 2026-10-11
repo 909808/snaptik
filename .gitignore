@@ -5,3 +5,6 @@ venv/
 .pytest_cache/
 .env
 .DS_Store
+
+# Folders written by `python -m app.bulk` (default output: ./tiktok-<name>)
+tiktok-*/

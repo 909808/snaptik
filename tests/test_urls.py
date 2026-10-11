@@ -79,7 +79,16 @@ def test_short_links_are_recognised_and_normalised(url: str) -> None:
         f"https://www.tiktok.com:99999/@a/video/{VID}",
         # right host, not a video
         "https://www.tiktok.com/",
-        "https://www.tiktok.com/@scout2015",
+        "https://www.tiktok.com/@scout2015/followers",
+        "https://www.tiktok.com/@scout2015/liked",
+        "https://www.tiktok.com/@scout2015/playlist/my-list-123456789",
+        "https://www.tiktok.com/@scout2015/collection/favs-123456789",
+        "https://www.tiktok.com/@scout2015//",
+        "https://www.tiktok.com/@",
+        "https://www.tiktok.com/@" + "a" * 101,
+        "https://www.tiktok.com/@scout 2015",
+        "https://evil.example/@scout2015",
+        "https://www.tiktok.com.evil.example/@scout2015",
         "https://www.tiktok.com/login",
         "https://www.tiktok.com/@a/video/abc",
         "https://www.tiktok.com/@a/video/",
@@ -97,6 +106,41 @@ def test_short_links_are_recognised_and_normalised(url: str) -> None:
 def test_hostile_or_irrelevant_urls_are_rejected(url: str) -> None:
     with pytest.raises(InvalidURL):
         parse_tiktok_url(url)
+
+
+@pytest.mark.parametrize(
+    ("url", "handle"),
+    [
+        ("https://www.tiktok.com/@scout2015", "scout2015"),
+        ("https://www.tiktok.com/@scout2015/", "scout2015"),
+        ("https://www.tiktok.com/@scout2015?lang=en&is_from_webapp=1", "scout2015"),
+        ("https://tiktok.com/@a.b-c_d", "a.b-c_d"),
+        ("http://m.tiktok.com/@Scout", "Scout"),
+        ("https://www.tiktok.com/@6820838815978423302", "6820838815978423302"),  # profile by numeric id
+        ("https://www.tiktok.com/@MS4wLjABAAAA" + "x" * 64, "MS4wLjABAAAA" + "x" * 64),  # by secUid
+    ],
+)
+def test_profile_links_are_recognised(url: str, handle: str) -> None:
+    target = parse_tiktok_url(url)
+    assert target == Target(profile=handle)
+    assert not target.is_short and target.video_id is None
+    assert target.canonical_url == f"https://www.tiktok.com/@{handle}"
+
+
+def test_a_video_link_is_never_mistaken_for_a_profile() -> None:
+    target = parse_tiktok_url(f"https://www.tiktok.com/@scout2015/video/{VID}")
+    assert target.profile is None and target.video_id == VID
+
+
+def test_share_text_can_carry_a_profile_link() -> None:
+    assert parse_input("Follow me! https://www.tiktok.com/@scout2015?_r=1 #fyp").profile == "scout2015"
+    assert parse_input("tiktok.com/@scout2015").profile == "scout2015"
+
+
+def test_a_short_link_may_lead_to_a_profile() -> None:
+    client, seen = make_client(lambda r: redirect("https://www.tiktok.com/@scout2015?_d=abc&u_code=x"))
+    assert resolve_target("https://vm.tiktok.com/ZMabcdef/", client) == Target(profile="scout2015")
+    assert seen == ["https://vm.tiktok.com/ZMabcdef/"]
 
 
 def test_canonical_url_is_rebuilt_from_validated_parts() -> None:

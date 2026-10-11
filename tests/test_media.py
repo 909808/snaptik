@@ -1,11 +1,14 @@
 """Format selection and option building: the logic most likely to need updating when TikTok changes."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.media import (
     KIND_AUDIO,
     KIND_COVER,
+    KIND_META,
     KIND_VIDEO,
     KIND_VIDEO_SD,
     KIND_VIDEO_WM,
@@ -13,8 +16,13 @@ from app.media import (
     build_options,
     download_stem,
     format_size,
+    hashtags,
     is_slideshow,
     parse_info,
+    post_kind,
+    post_record,
+    posted_at,
+    posted_date,
     safe_filename,
     video_candidates,
 )
@@ -144,15 +152,16 @@ def test_no_media_at_all_means_no_audio() -> None:
 
 def test_options_for_a_typical_post() -> None:
     options = build_options(make_info(), ffmpeg_available=True)
-    assert [o.kind for o in options] == [KIND_VIDEO, KIND_VIDEO_SD, KIND_AUDIO, KIND_COVER, KIND_VIDEO_WM]
-    assert [o.primary for o in options] == [True, False, False, False, False]
+    assert [o.kind for o in options] == [KIND_VIDEO, KIND_VIDEO_SD, KIND_AUDIO, KIND_COVER, KIND_VIDEO_WM, KIND_META]
+    assert [o.primary for o in options] == [True, False, False, False, False, False]
 
-    main, sd, audio, cover, marked = options
+    main, sd, audio, cover, marked, details = options
     assert (main.title, main.detail, main.tag) == ("Video · 1080p", "MP4 · H.264 · 6.6 MB", "No watermark")
     assert sd.title == "Video · 576p"
     assert (audio.title, audio.detail, audio.ext) == ("Audio · MP3", "original sound - scout2015", "mp3")
     assert cover.title == "Cover image"
     assert marked.tag == "Watermarked"
+    assert (details.title, details.ext) == ("Caption & details", "json")
 
 
 def test_audio_is_labelled_m4a_when_it_cannot_be_converted() -> None:
@@ -169,7 +178,7 @@ def test_slideshow_post_offers_sound_and_cover_only() -> None:
     info = make_info(formats=[f for f in sample_formats() if f.audio_only])
     assert is_slideshow(info)
     options = build_options(info, ffmpeg_available=True)
-    assert [o.kind for o in options] == [KIND_AUDIO, KIND_COVER]
+    assert [o.kind for o in options] == [KIND_AUDIO, KIND_COVER, KIND_META]
     assert options[0].primary  # the sound is the main thing you can get
     assert not is_slideshow(make_info())
 
@@ -278,3 +287,78 @@ def test_safe_filename_is_ascii_and_header_safe(stem: str, ext: str, expected: s
 def test_download_stem_skips_missing_parts() -> None:
     assert download_stem(make_info(), "cover") == "tiktok_scout2015_6718335390845095173_cover"
     assert download_stem(make_info(author_handle=None)) == "tiktok_6718335390845095173"
+
+
+# ------------------------------------------------------------- post details (captions)
+
+
+def test_hashtags_are_unique_ordered_and_unicode_aware() -> None:
+    assert hashtags("so #Cute and #cute again #猫 #fyp #fyp") == ["Cute", "cute", "猫", "fyp"]
+    assert hashtags("no tags here, just a # and 5#") == ["5"] or hashtags("no tags here, just a # and 5#") == []
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "iso", "day"),
+    [
+        (1_561_572_000, "2019-06-26T18:00:00Z", "2019-06-26"),
+        (0, "1970-01-01T00:00:00Z", "1970-01-01"),
+        (None, None, None),
+        (10**15, None, None),  # beyond what a date can hold: dropped rather than crashing
+        (-(10**15), None, None),
+    ],
+)
+def test_post_dates_tolerate_missing_and_absurd_timestamps(timestamp: int | None, iso: str | None, day: str | None) -> None:
+    info = make_info(timestamp=timestamp)
+    assert (posted_at(info), posted_date(info)) == (iso, day)
+
+
+def test_the_post_record_has_everything_worth_keeping() -> None:
+    info = make_info(timestamp=1_561_572_000, description="Hello #fyp #cats second line",
+                     caption="Hello #fyp #cats\nsecond line")  # fmt: skip
+    record = post_record(info)
+    assert record == {
+        "id": "6718335390845095173",
+        "url": CANONICAL,
+        "type": "video",
+        "caption": "Hello #fyp #cats\nsecond line",  # the archived caption keeps its line breaks
+        "hashtags": ["fyp", "cats"],
+        "author": {"name": "Scout", "handle": "scout2015"},
+        "posted_at": "2019-06-26T18:00:00Z",
+        "duration": 15,
+        "stats": {"views": 1_234_567, "likes": 84_200, "comments": 1_290, "shares": 3_410},
+        "sound": {"title": "original sound - scout2015", "artists": ["Scout"]},
+        "photo_count": None,
+    }
+    json.dumps(record)  # must be serialisable as is
+
+
+def test_post_kind_distinguishes_video_photos_and_sound_only() -> None:
+    assert post_kind(make_info()) == "video"
+    assert post_kind(make_info(images=[["https://cdn.example.test/1.jpg"]])) == "photos"
+    assert post_kind(make_info(formats=[f for f in sample_formats() if f.audio_only])) == "audio"
+
+
+def test_photo_urls_from_yt_dlp_info_are_sanitised() -> None:
+    raw = {"snaptik_images": [["https://a.test/1.jpg", "javascript:alert(1)", "https://a.test/1.jpg"], [], "x", None,
+                              ["ftp://a.test/2.jpg"], ["http://b.test/3.png"]]}  # fmt: skip
+    assert parse_info(raw, CANONICAL).images == [["https://a.test/1.jpg"], ["http://b.test/3.png"]]
+    assert parse_info({"snaptik_images": "not a list"}, CANONICAL).images == []
+
+
+def test_photo_posts_lead_with_the_photos_and_keep_sound_secondary() -> None:
+    info = make_info(images=[["https://a.test/1.jpg"], ["https://a.test/2.jpg"]],
+                     formats=[f for f in sample_formats() if f.audio_only])  # fmt: skip
+    options = build_options(info, ffmpeg_available=True)
+    assert [o.kind for o in options] == ["images", "audio", "cover", "meta"]
+    assert [o.primary for o in options] == [True, False, False, False]
+    assert (options[0].title, options[0].ext) == ("Photos · 2", "zip")
+    assert is_slideshow(info)
+
+
+def test_the_archived_caption_keeps_line_breaks_but_the_display_text_is_one_line() -> None:
+    raw = {"description": "line one\r\nline two  \n\n\x00line\x07 four\t!"}
+    info = parse_info(raw, CANONICAL)
+    assert info.caption == "line one\nline two\n\nline four\t!"
+    assert info.description == "line one line two line four !"
+    assert parse_info({"description": "x" * 5000}, CANONICAL).caption.endswith("…")
+    assert parse_info({}, CANONICAL).caption == ""

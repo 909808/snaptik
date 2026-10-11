@@ -217,6 +217,58 @@ h1 {
   border-radius: 12px; box-shadow: 4px 4px 0 var(--accent);
 }
 
+/* ---------- profiles and saving many posts ---------- */
+.formats { max-width: 780px; margin: 14px auto 0; font-size: .88rem; color: var(--muted); }
+.links { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+
+.profile { margin-top: 38px; animation: rise .35s ease both; }
+.profile-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.profile-head .eyebrow { margin-bottom: 4px; overflow-wrap: anywhere; }
+.profile-head h2 { margin: 0 0 4px; font-size: 1.5rem; line-height: 1.2; letter-spacing: -.02em; overflow-wrap: anywhere; }
+.profile-head h2:focus { outline: none; }
+
+.options {
+  display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 18px 0 0; padding: 10px 16px 12px;
+  background: var(--surface-2); border: 2px solid var(--stroke); border-radius: 12px;
+}
+.options legend { padding: 0 6px; font-size: .74rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.options label { display: inline-flex; align-items: center; gap: 8px; font-weight: 650; cursor: pointer; }
+input[type="checkbox"] { flex: none; width: 1.15rem; height: 1.15rem; accent-color: var(--accent); cursor: pointer; }
+
+.selectbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin: 14px 0 8px; }
+.selectbar .stats { margin-left: auto; }
+
+.post-list {
+  max-height: 30rem; margin: 6px 0 0; padding: 0; overflow-y: auto; list-style: none;
+  background: var(--surface); border: 2px solid var(--stroke); border-radius: 14px;
+}
+.post { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; padding-right: 12px; border-bottom: 2px solid var(--surface-2); }
+.post:last-child { border-bottom: 0; }
+.post:has(input:checked) { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+.post-pick { display: grid; grid-template-columns: auto 52px 1fr; align-items: center; gap: 12px; min-width: 0; padding: 10px 6px 10px 14px; cursor: pointer; }
+.post-pick:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.no-select .post-pick { grid-template-columns: 52px 1fr; cursor: default; }
+.post-thumb { width: 52px; height: 68px; object-fit: cover; background: var(--surface-2); border: 2px solid var(--stroke); border-radius: 8px; }
+.post-text { display: grid; gap: 2px; min-width: 0; }
+.post-caption {
+  font-weight: 650; line-height: 1.3; overflow: hidden; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.post-meta { font-size: .82rem; color: var(--muted); }
+.post .open { font-size: .9rem; white-space: nowrap; }
+
+.bulk-actions { display: grid; justify-items: start; gap: 10px; margin-top: 18px; }
+.hint { max-width: 62ch; margin: 0; font-size: .86rem; color: var(--muted); }
+.progress { display: grid; justify-items: start; gap: 10px; margin-top: 18px; padding: 16px; border: 2px dashed var(--stroke); border-radius: 14px; }
+.progress progress {
+  width: 100%; height: 16px; overflow: hidden; appearance: none;
+  background: var(--surface-2); border: 2px solid var(--stroke); border-radius: 999px;
+}
+.progress progress::-webkit-progress-bar { background: var(--surface-2); }
+.progress progress::-webkit-progress-value { background: var(--accent); transition: width .4s ease; }
+.progress progress::-moz-progress-bar { background: var(--accent); }
+.progress-text { margin: 0; font-weight: 650; overflow-wrap: anywhere; }
+
 @keyframes spin { to { transform: rotate(360deg); } }
 /* Opacity only: a transform would make scrollIntoView aim at the card's pre-animation position. */
 @keyframes rise { from { opacity: 0; } to { opacity: 1; } }
@@ -231,6 +283,16 @@ h1 {
   .action .tag { grid-column: 2; justify-self: start; }
   .steps { grid-template-columns: 1fr; }
   .section { margin-top: 64px; }
+  .profile { padding: 18px; }
+  .profile-head { flex-direction: column; gap: 4px; }
+  .post-list { max-height: 26rem; }
+  .post { padding-right: 10px; }
+  .post-pick { grid-template-columns: auto 44px 1fr; gap: 10px; padding-left: 10px; }
+  .no-select .post-pick { grid-template-columns: 44px 1fr; }
+  .post-thumb { width: 44px; height: 58px; }
+  .options { gap: 8px 16px; }
+  .selectbar .stats { margin-left: 0; flex-basis: 100%; }
+  .bulk-actions .btn, .progress .btn { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

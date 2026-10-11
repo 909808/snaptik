@@ -9,13 +9,15 @@ What yt-dlp's TikTok extractor gives us (see ``yt_dlp/extractor/tiktok.py``):
 * a ``download`` / ``download_addr`` format whose note says "watermarked";
 * ``bytevc2`` formats flagged UNPLAYABLE (ByteDance's own codec): never offered;
 * an ``audio`` format (``vcodec == "none"``): the post's sound track;
-* slideshow posts have the audio format only.
+* slideshow posts have the audio format only. yt-dlp does not read their photos, so the
+  backend adds them under ``snaptik_images`` (see ``TikTokPhotosIE`` in backend.py).
 """
 from __future__ import annotations
 
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 KIND_VIDEO = "video"
@@ -23,8 +25,10 @@ KIND_VIDEO_SD = "video_sd"
 KIND_VIDEO_WM = "video_wm"
 KIND_AUDIO = "audio"
 KIND_COVER = "cover"
+KIND_IMAGES = "images"  # all photos of a slideshow post, as a ZIP
+KIND_META = "meta"  # caption and details, as JSON
 VIDEO_KINDS = (KIND_VIDEO, KIND_VIDEO_SD, KIND_VIDEO_WM)
-DOWNLOAD_KINDS = (*VIDEO_KINDS, KIND_AUDIO, KIND_COVER)
+DOWNLOAD_KINDS = (*VIDEO_KINDS, KIND_AUDIO, KIND_COVER, KIND_IMAGES, KIND_META)
 
 _DROP_HEADERS = {"cookie", "host", "content-length", "accept-encoding"}
 
@@ -97,6 +101,9 @@ class VideoInfo:
     track: str | None = None
     artists: list[str] = field(default_factory=list)
     formats: list[MediaFormat] = field(default_factory=list)
+    timestamp: int | None = None  # when the post was published (unix seconds)
+    images: list[list[str]] = field(default_factory=list)  # slideshow photos: candidate URLs for each
+    caption: str = ""  # the full caption as written, line breaks kept (``description`` is one tidy line)
 
 
 # --------------------------------------------------------------------------- parsing
@@ -119,6 +126,16 @@ def _text(value: Any, limit: int) -> str:
         return ""
     cleaned = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", value).split())
     return cleaned if len(cleaned) <= limit else cleaned[: limit - 1].rstrip() + "…"
+
+
+def _multiline(value: Any, limit: int) -> str:
+    """Text as written (line breaks kept) minus control characters, for what is archived."""
+    if not isinstance(value, str):
+        return ""
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+    text = "\n".join(line.rstrip() for line in text.split("\n")).strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def _is_http(value: Any) -> bool:
@@ -172,6 +189,16 @@ def _cover_urls(raw: Mapping[str, Any]) -> list[str]:
     return list(dict.fromkeys(urls))
 
 
+def _image_urls(raw: Any) -> list[list[str]]:
+    """Per photo, its candidate URLs (TikTok lists several CDN hosts); anything malformed is dropped."""
+    images = []
+    for candidates in raw if isinstance(raw, list) else []:
+        urls = [u for u in candidates if _is_http(u)] if isinstance(candidates, list) else []
+        if urls:
+            images.append(list(dict.fromkeys(urls)))
+    return images
+
+
 def parse_info(raw: Mapping[str, Any], canonical_url: str) -> VideoInfo:
     covers = _cover_urls(raw)
     artists = raw.get("artists")
@@ -195,6 +222,9 @@ def parse_info(raw: Mapping[str, Any], canonical_url: str) -> VideoInfo:
         track=_text(raw.get("track"), 120) or None,
         artists=[_text(a, 80) for a in artists if isinstance(a, str) and a][:5] if isinstance(artists, list) else [],
         formats=[f for item in raw.get("formats") or [] if (f := _parse_format(item))],
+        timestamp=_int(raw.get("timestamp")),
+        images=_image_urls(raw.get("snaptik_images")),
+        caption=_multiline(raw.get("description"), 4000),
     )
 
 
@@ -256,8 +286,8 @@ def audio_plan(info: VideoInfo, *, ffmpeg_available: bool) -> AudioPlan | None:
 
 
 def is_slideshow(info: VideoInfo) -> bool:
-    """Photo posts come back from yt-dlp with a sound track but no video."""
-    return not _video_pool(info) and any(f.audio_only for f in info.formats)
+    """Photo posts have photos, or at least come back from yt-dlp with a sound track but no video."""
+    return bool(info.images) or (not _video_pool(info) and any(f.audio_only for f in info.formats))
 
 
 # -------------------------------------------------------------------------- options
@@ -297,6 +327,10 @@ def _video_option(fmt: MediaFormat, info: VideoInfo, kind: str, *, primary: bool
 def build_options(info: VideoInfo, *, ffmpeg_available: bool) -> list[DownloadOption]:
     options: list[DownloadOption] = []
 
+    if info.images:
+        count = len(info.images)
+        options.append(DownloadOption(KIND_IMAGES, f"Photos · {count}", "All images in one ZIP", "", "zip", primary=True))
+
     main = video_candidates(info, KIND_VIDEO)
     if main:
         options.append(_video_option(main[0], info, KIND_VIDEO, primary=True))
@@ -305,14 +339,124 @@ def build_options(info: VideoInfo, *, ffmpeg_available: bool) -> list[DownloadOp
 
     if plan := audio_plan(info, ffmpeg_available=ffmpeg_available):
         detail = info.track or "Sound only"
-        options.append(DownloadOption(KIND_AUDIO, f"Audio · {plan.ext.upper()}", detail, "", plan.ext, primary=not main))
+        primary = not main and not info.images
+        options.append(DownloadOption(KIND_AUDIO, f"Audio · {plan.ext.upper()}", detail, "", plan.ext, primary=primary))
 
     if info.covers:
         options.append(DownloadOption(KIND_COVER, "Cover image", "Thumbnail", "", "jpg"))
 
     if wm := video_candidates(info, KIND_VIDEO_WM):
         options.append(_video_option(wm[0], info, KIND_VIDEO_WM))
+
+    if options:  # the caption alone is not "something to download"
+        options.append(DownloadOption(KIND_META, "Caption & details", "JSON · caption, date, stats, sound", "", "json"))
     return options
+
+
+# ------------------------------------------------------------------- post details
+
+_HASHTAG = re.compile(r"#(\w+)")
+
+
+def hashtags(text: str) -> list[str]:
+    return list(dict.fromkeys(_HASHTAG.findall(text)))
+
+
+def _utc(timestamp: int | None) -> datetime | None:
+    if timestamp is None:
+        return None
+    try:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def iso_date(timestamp: int | None) -> str | None:
+    """``2024-03-14``, in UTC so a post's date does not depend on where the server runs."""
+    moment = _utc(timestamp)
+    return moment.strftime("%Y-%m-%d") if moment else None
+
+
+def posted_at(info: VideoInfo) -> str | None:
+    moment = _utc(info.timestamp)
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ") if moment else None
+
+
+def posted_date(info: VideoInfo) -> str | None:
+    return iso_date(info.timestamp)
+
+
+def post_kind(info: VideoInfo) -> str:
+    if info.images:
+        return "photos"
+    return "video" if _video_pool(info) else "audio"
+
+
+def post_record(info: VideoInfo) -> dict[str, Any]:
+    """Everything worth keeping about a post besides its media: the caption file and manifest row."""
+    caption = info.caption or info.description or info.title
+    return {
+        "id": info.id,
+        "url": info.url,
+        "type": post_kind(info),
+        "caption": caption,
+        "hashtags": hashtags(caption),
+        "author": {"name": info.author_name, "handle": info.author_handle},
+        "posted_at": posted_at(info),
+        "duration": info.duration,
+        "stats": dict(info.stats),
+        "sound": {"title": info.track, "artists": list(info.artists)},
+        "photo_count": len(info.images) or None,
+    }
+
+
+# ------------------------------------------------------------------- profile listing
+
+_POST_ID = re.compile(r"\d{6,25}")
+
+
+@dataclass(frozen=True, slots=True)
+class ProfilePost:
+    id: str
+    url: str
+    caption: str
+    timestamp: int | None
+    duration: int | None
+    thumbnail: str | None
+    stats: dict[str, int | None]
+
+
+@dataclass(slots=True)
+class ProfileListing:
+    handle: str
+    name: str | None
+    posts: list[ProfilePost]
+    more: bool = False  # TikTok has older posts beyond the ones listed
+    warning: str | None = None  # the list is shorter than it should be because TikTok pushed back
+
+
+def parse_profile_entry(entry: Any, handle: str) -> ProfilePost | None:
+    """One row of yt-dlp's flat listing of a user. It already carries caption, date and stats."""
+    if not isinstance(entry, Mapping):
+        return None
+    post_id = str(entry.get("id") or "")
+    if not _POST_ID.fullmatch(post_id):
+        return None
+    covers = _cover_urls(entry)
+    return ProfilePost(
+        id=post_id,
+        url=f"https://www.tiktok.com/@{handle}/video/{post_id}",  # rebuilt: never trust the entry's own URL
+        caption=_text(entry.get("description") or entry.get("title"), 300),
+        timestamp=_int(entry.get("timestamp")),
+        duration=_int(entry.get("duration")),
+        thumbnail=covers[0] if covers else None,
+        stats={
+            "views": _int(entry.get("view_count")),
+            "likes": _int(entry.get("like_count")),
+            "comments": _int(entry.get("comment_count")),
+            "shares": _int(entry.get("repost_count")),
+        },
+    )
 
 
 # ------------------------------------------------------------------------ filenames

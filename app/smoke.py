@@ -36,6 +36,9 @@ def main(argv: Sequence[str] | None = None, *, backend: Backend | None = None) -
             timeout=settings.network_timeout, proxy=settings.proxy_url, headers={"User-Agent": "facebookexternalhit/1.1"}
         ) as http:
             target = resolve_target(args.url, http)
+        if target.profile is not None:
+            print(f"That is a profile link; check profiles with: python -m app.bulk @{target.profile} --dry-run", file=sys.stderr)
+            return 2
         print(f"post      {target.canonical_url}")
 
         info = backend.fetch_info(target.canonical_url)
