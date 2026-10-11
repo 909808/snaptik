@@ -16,7 +16,7 @@ from yt_dlp.utils import ExtractorError
 
 from app.backend import YtDlpBackend
 from app.config import Settings
-from app.errors import LoginRequired, UpstreamBlocked, VideoUnavailable
+from app.errors import LoginRequired, UpstreamBlocked, UpstreamError, VideoUnavailable
 from app.media import ProfilePost, parse_profile_entry
 
 pytestmark = pytest.mark.skipif(
@@ -142,6 +142,15 @@ def test_a_private_account_is_reported_as_such() -> None:
     backend, calls = backend_for(TWO_PAGES, html=user_page(status=10222))
     with pytest.raises(LoginRequired, match="private"):
         backend.list_profile("scout2015", 50)
+    assert calls["api"] == 0
+
+
+def test_a_profile_that_does_not_exist_gets_an_explanation_that_does_not_say_try_again_in_a_moment() -> None:
+    # yt-dlp's wording when the page holds no account data (status 10221 is "user not found").
+    backend, calls = backend_for(TWO_PAGES, html=user_page(status=10221))
+    with pytest.raises(UpstreamError, match="Check the spelling") as caught:
+        backend.list_profile("nobody-here", 50)
+    assert "in a moment" not in caught.value.message
     assert calls["api"] == 0
 
 

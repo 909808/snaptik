@@ -252,6 +252,7 @@ On a public instance, think about whether to offer ZIP downloads at all. A ZIP o
 
 - **`upstream_blocked` or `upstream_error` on every link.** TikTok often refuses datacenter IP ranges. Run it from a home connection, or set `SNAPTIK_PROXY_URL` to a (residential) proxy. Run `python -m app.smoke <url>` with `SNAPTIK_LOG_LEVEL=DEBUG` to see yt-dlp's own message.
 - **A profile saving run stopped with "TikTok keeps refusing requests".** That is the rate limiting described above. Wait a while and run the same command again; saved posts are skipped. A longer `--delay` (5 to 10 seconds) lowers the chance of it happening again.
+- **"Couldn't read that profile."** Either the name is misspelt or the account doesn't exist, or TikTok showed this server a block page instead of the profile. Check the name in your browser first; if it is right, treat it like the blocked-connection case above.
 - **A profile shows fewer posts than it has, with a warning.** TikTok cut the listing short. Try again later; the command line tells you how many it found.
 - **It worked yesterday.** TikTok changed something. Upgrade yt-dlp (`pip install -U yt-dlp`, or rebuild the image) and retry.
 - **The audio button says "M4A".** ffmpeg wasn't found; install it or set `SNAPTIK_FFMPEG_PATH`.

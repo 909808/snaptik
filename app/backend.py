@@ -429,6 +429,13 @@ class YtDlpBackend:
             mapped = map_ytdlp_error(exc)
             if isinstance(mapped, LoginRequired):
                 mapped = LoginRequired("This account is private, so its posts can't be listed.")
+            elif "unable to extract secondary user id" in str(exc).lower():
+                # yt-dlp's wording when the profile page held no account data: a misspelt name, or TikTok
+                # showing this server a block page. Either way "try again in a moment" would mislead.
+                mapped = UpstreamError(
+                    "Couldn't read that profile. Check the spelling of the name; if it is right, "
+                    "TikTok may be refusing this server right now."
+                )
             raise mapped from exc
         except AppError:
             raise
