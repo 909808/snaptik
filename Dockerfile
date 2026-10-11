@@ -22,7 +22,7 @@ RUN pip install -r requirements.txt
 
 COPY app ./app
 
-RUN useradd --system --uid 10001 --no-create-home snaptik
+RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin snaptik
 USER snaptik
 
 EXPOSE 8000

@@ -176,6 +176,18 @@ def test_bare_and_punctuated_links(text: str) -> None:
     assert parse_input(text).video_id == VID
 
 
+@pytest.mark.parametrize("text", ["@scout2015", "  @scout2015  ", "@Scout_2015.official-x"])
+def test_a_lone_handle_is_a_profile(text: str) -> None:
+    assert parse_input(text) == Target(profile=text.strip().lstrip("@"))
+    assert parse_input(text).canonical_url == f"https://www.tiktok.com/@{text.strip().lstrip('@')}"
+
+
+@pytest.mark.parametrize("text", ["@", "@@x", "@a b", "@../etc", "@scout2015 hello", "hello @scout2015", "@" + "x" * 101, "@é", "@x/y"])
+def test_anything_else_that_starts_with_an_at_sign_is_not_a_profile(text: str) -> None:
+    with pytest.raises(InvalidURL):
+        parse_input(text)
+
+
 def test_bare_short_link() -> None:
     assert parse_input("vm.tiktok.com/ZMabc123/").is_short
 

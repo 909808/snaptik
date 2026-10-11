@@ -35,6 +35,7 @@ _VIDEO_PATH = re.compile(rf"^/@(?P<user>[A-Za-z0-9_.\-]{{0,64}})/(?:video|photo)
 _ID_PATH = re.compile(rf"^/(?:embed(?:/v2)?|share/(?:video|photo)|v)/{_ID}(?:\.html)?/?$")
 _PROFILE_PATH = re.compile(r"^/@(?P<handle>[A-Za-z0-9_.\-]{1,100})/?$")
 _SHORT_ROOT = re.compile(r"^/(?P<code>[A-Za-z0-9_\-]{3,40})/?$")
+_BARE_HANDLE = re.compile(r"@(?P<handle>[A-Za-z0-9_.\-]{1,100})")  # "@name" typed on its own
 _SHORT_T = re.compile(r"^/t/(?P<code>[A-Za-z0-9_\-]{3,40})/?$")
 
 
@@ -106,10 +107,12 @@ def _candidates(text: str) -> Iterator[str]:
 
 
 def parse_input(text: str) -> Target:
-    """Find the first TikTok video link inside free-form pasted text."""
+    """Find the first TikTok link inside free-form pasted text, or take a lone ``@name`` as that profile."""
     text = (text or "").strip()
     if not text or len(text) > MAX_INPUT_LENGTH:
         raise InvalidURL()
+    if bare := _BARE_HANDLE.fullmatch(text):
+        return Target(profile=bare["handle"])
     first_error: InvalidURL | None = None
     for candidate in _candidates(text):
         try:
