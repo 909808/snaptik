@@ -106,7 +106,7 @@ It can, and bulk saving is exactly what triggers it, so the tool is built around
 - **Other trouble** (network hiccups, a failed conversion) is retried, and a post that keeps failing is recorded as failed and tried again on the next run. Five failures in a row also stop the run, rather than carrying on regardless.
 - **Resuming.** Posts already saved are never fetched again, and posts that were private or removed aren't re-checked unless you pass `--retry-skipped`. If you do get blocked, wait (minutes to hours, sometimes a day) and run the same command.
 
-What it deliberately does not do is try to get around a block. SnapTik reaches TikTok through yt-dlp, which presents itself the way a normal browser does (that is how every yt-dlp-based tool works), but SnapTik adds nothing on top: no rotating proxies or fake identities, and no parallel downloads to make up for the pauses. Tricks like those are what turn a temporary slowdown into a permanent ban. If a connection is blocked, the fix is to wait.
+What it deliberately does not do is try to get around a block. SnapTik reaches TikTok through yt-dlp, which presents itself the way a normal browser does when it loads TikTok's pages. TikTok's firewall also refuses the request that lists a profile's posts when it comes from something that doesn't look like a browser, so SnapTik asks yt-dlp to present itself as one for that request too (this is yt-dlp's own documented `--impersonate` option; `SNAPTIK_IMPERSONATE=off` turns it off). That is the whole of it: no rotating proxies, no forged tokens or signatures, no parallel downloads to make up for the pauses, and if TikTok still refuses, the run stops. Tricks like those are what turn a temporary slowdown into a permanent ban. If a connection is blocked, the fix is to wait.
 
 ### Titles, captions… and comments
 
@@ -147,6 +147,7 @@ Environment variables, all optional:
 | `SNAPTIK_BULK_MAX_SECONDS` | `1800` | A ZIP never runs longer than this; it finishes with what it has. |
 | `SNAPTIK_RATE_LIMIT_BULK` | `6` | ZIPs per hour per client IP (`0` = unlimited). |
 | `SNAPTIK_MAX_CONCURRENT_BULK` | `1` | ZIPs running at once on the server. |
+| `SNAPTIK_IMPERSONATE` | `chrome` | The browser yt-dlp presents itself as when listing a profile's posts, which TikTok's firewall otherwise refuses. `off` disables it. |
 
 The command-line tool reads the same variables for the proxy, timeouts, file-size cap and temp directory.
 
@@ -251,10 +252,12 @@ On a public instance, think about whether to offer ZIP downloads at all. A ZIP o
 ## Troubleshooting
 
 - **`upstream_blocked` or `upstream_error` on every link.** TikTok often refuses datacenter IP ranges. Run it from a home connection, or set `SNAPTIK_PROXY_URL` to a (residential) proxy. Run `python -m app.smoke <url>` with `SNAPTIK_LOG_LEVEL=DEBUG` to see yt-dlp's own message.
+- **"TikTok refused to list this profile's posts to this connection."** TikTok's firewall turned the request away. Make sure `curl-cffi` is installed (`pip install -r requirements.txt` includes it; without it the browser impersonation described above is unavailable and the log says so), then try again later or from another network, such as your home connection rather than a server.
 - **A profile saving run stopped with "TikTok keeps refusing requests".** That is the rate limiting described above. Wait a while and run the same command again; saved posts are skipped. A longer `--delay` (5 to 10 seconds) lowers the chance of it happening again.
 - **"Couldn't read that profile."** Either the name is misspelt or the account doesn't exist, or TikTok showed this server a block page instead of the profile. Check the name in your browser first; if it is right, treat it like the blocked-connection case above.
 - **A profile shows fewer posts than it has, with a warning.** TikTok cut the listing short. Try again later; the command line tells you how many it found.
 - **It worked yesterday.** TikTok changed something. Upgrade yt-dlp (`pip install -U yt-dlp`, or rebuild the image) and retry.
+- **A downloaded video won't play.** The top video option is the highest resolution TikTok offers, which is sometimes H.265 (HEVC) rather than H.264, and some Windows setups can't play H.265 without an extra codec. The second video option ("SD") is the best H.264 file; VLC plays both.
 - **The audio button says "M4A".** ffmpeg wasn't found; install it or set `SNAPTIK_FFMPEG_PATH`.
 - **A photo post only offers sound and cover.** The photo list couldn't be read from TikTok's page data (see Limits above). Check for a yt-dlp upgrade, and report it if it persists.
 

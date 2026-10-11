@@ -42,6 +42,11 @@ class Settings:
     rate_limit_bulk: int = 6  # ZIPs per hour per client
     max_concurrent_bulk: int = 1
 
+    # TikTok's firewall refuses the request that lists a profile's posts unless the client looks like a browser
+    # (yt-dlp already presents itself that way for TikTok's pages, but not for this one). This is yt-dlp's own
+    # documented ``--impersonate`` option, used for that one request; "" turns it off.
+    impersonate: str = "chrome"
+
     # Tests only: lets the streaming code talk to a server on localhost.
     allow_private_upstream: bool = False
 
@@ -73,6 +78,13 @@ def _float(name: str, default: float) -> float:
         return max(0.0, float(raw))
     except ValueError:
         raise ValueError(f"SNAPTIK_{name} must be a number, got {raw!r}") from None
+
+
+def _impersonate(default: str) -> str:
+    raw = _env("IMPERSONATE")
+    if raw is None:
+        return default
+    return "" if raw.lower() in {"off", "none", "no", "false", "0"} else raw
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -109,4 +121,5 @@ def load_settings() -> Settings:
         bulk_max_seconds=max(60, _int("BULK_MAX_SECONDS", d.bulk_max_seconds)),
         rate_limit_bulk=_int("RATE_LIMIT_BULK", d.rate_limit_bulk),
         max_concurrent_bulk=max(1, _int("MAX_CONCURRENT_BULK", d.max_concurrent_bulk)),
+        impersonate=_impersonate(d.impersonate),
     )

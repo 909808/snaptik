@@ -8,9 +8,11 @@ As with the other canaries, it cannot say whether TikTok's live API still matche
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import pytest
+import yt_dlp
 from yt_dlp.extractor.tiktok import TikTokUserIE
 from yt_dlp.utils import ExtractorError
 
@@ -57,7 +59,9 @@ def page(*items: dict[str, Any], more: bool) -> dict[str, Any]:
     return {"itemList": list(items), "hasMorePrevious": more}
 
 
-def backend_for(pages: list[dict[str, Any] | Exception], html: str | None = None) -> tuple[YtDlpBackend, dict[str, int]]:
+def backend_for(
+    pages: list[dict[str, Any] | Exception], html: str | None = None, **settings: Any
+) -> tuple[YtDlpBackend, dict[str, int]]:
     calls = {"page": 0, "api": 0}
 
     class TikTokUserFixtureIE(TikTokUserIE):
@@ -80,7 +84,7 @@ def backend_for(pages: list[dict[str, Any] | Exception], html: str | None = None
             ydl.add_info_extractor(TikTokUserFixtureIE())
             return ydl
 
-    return Backend(Settings(network_timeout=5)), calls
+    return Backend(Settings(network_timeout=5, **settings)), calls
 
 
 TWO_PAGES = [
@@ -158,6 +162,88 @@ def test_an_account_without_posts_is_reported_as_such() -> None:
     backend, _ = backend_for(TWO_PAGES, html=user_page(count=0))
     with pytest.raises(VideoUnavailable, match="hasn't posted"):
         backend.list_profile("scout2015", 50)
+
+
+# The request that lists a profile's posts is refused by TikTok's firewall (Akamai answers "access denied"
+# in HTML, which yt-dlp reports as "Failed to parse JSON") unless the client looks like a browser.
+DENIED = ExtractorError("Failed to parse JSON (caused by JSONDecodeError(\"Expecting value in '': line 1 column 1 (char 0)\"))")
+
+
+def test_the_firewalls_access_denied_page_is_reported_as_a_block_not_as_a_hiccup() -> None:
+    backend, _ = backend_for([DENIED])
+    with pytest.raises(UpstreamBlocked, match="refused to list this profile's posts") as caught:
+        backend.list_profile("scout2015", 50)
+    assert "this post" not in caught.value.message  # the wording for a single post would be wrong here
+
+
+def test_a_denial_on_a_later_page_keeps_the_posts_and_says_why_the_list_is_short() -> None:
+    backend, _ = backend_for([page(item(3), item(2), more=True), DENIED])
+    listing = backend.list_profile("scout2015", 50)
+    assert len(listing.posts) == 2 and listing.more is True
+    assert "refused to list this profile's posts" in (listing.warning or "")
+
+
+class RecordingYoutubeDL(yt_dlp.YoutubeDL):
+    created: list[dict[str, Any]] = []
+
+    def __init__(self, params: dict[str, Any] | None = None, *args: Any, **kwargs: Any) -> None:
+        RecordingYoutubeDL.created.append(dict(params or {}))
+        super().__init__(params, *args, **kwargs)
+
+
+@pytest.fixture
+def recorded(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    RecordingYoutubeDL.created = []
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", RecordingYoutubeDL)
+    return RecordingYoutubeDL.created
+
+
+def test_listing_a_profile_presents_itself_as_a_browser_and_nothing_else_does(recorded: list[dict[str, Any]]) -> None:
+    backend, _ = backend_for(TWO_PAGES)
+    backend.list_profile("scout2015", 50)
+    assert recorded[0]["impersonate"].client == "chrome"
+    assert recorded[0]["extractor_retries"] == 5  # the other listing settings still apply
+
+    backend._new_ydl().close()  # what a single post's lookup and every file download are built with
+    assert "impersonate" not in recorded[-1]
+
+
+def test_a_long_listing_pauses_between_pages_and_a_short_one_does_not(recorded: list[dict[str, Any]]) -> None:
+    backend, _ = backend_for(TWO_PAGES)
+    backend.list_profile("scout2015", 90)  # what the page shows
+    backend.list_profile("scout2015", 1_000_000)  # the whole profile, from the command line
+    assert "sleep_interval_requests" not in recorded[0]
+    assert recorded[1]["sleep_interval_requests"] == 0.4
+
+
+@pytest.mark.parametrize("setting", ["", "   "])
+def test_impersonation_can_be_switched_off(recorded: list[dict[str, Any]], setting: str) -> None:
+    backend, _ = backend_for(TWO_PAGES, impersonate=setting)
+    backend.list_profile("scout2015", 50)
+    assert "impersonate" not in recorded[0]
+
+
+def test_the_browser_to_present_as_can_be_chosen(recorded: list[dict[str, Any]]) -> None:
+    backend, _ = backend_for(TWO_PAGES, impersonate="chrome:macos")
+    backend.list_profile("scout2015", 50)
+    assert (recorded[0]["impersonate"].client, recorded[0]["impersonate"].os) == ("chrome", "macos")
+
+
+def test_a_malformed_browser_name_is_ignored_with_a_warning(recorded: list[dict[str, Any]], caplog: pytest.LogCaptureFixture) -> None:
+    backend, _ = backend_for(TWO_PAGES, impersonate="a:b:c")
+    with caplog.at_level(logging.WARNING, logger="app.backend"):
+        assert len(backend.list_profile("scout2015", 50).posts) == 5
+    assert "impersonate" not in recorded[0] and "SNAPTIK_IMPERSONATE" in caplog.text
+
+
+def test_a_browser_that_is_not_available_does_not_stop_the_listing(recorded: list[dict[str, Any]], caplog: pytest.LogCaptureFixture) -> None:
+    """E.g. curl-cffi is not installed: list without impersonating (TikTok may refuse) instead of failing outright."""
+    backend, _ = backend_for(TWO_PAGES, impersonate="nobrowser")
+    with caplog.at_level(logging.WARNING, logger="app.backend"):
+        listing = backend.list_profile("scout2015", 50)
+    assert len(listing.posts) == 5
+    assert "impersonate" in recorded[0] and "impersonate" not in recorded[1]  # tried, then retried without
+    assert "browser impersonation is unavailable" in caplog.text
 
 
 def test_the_user_extractor_is_the_only_thing_asked_for_a_profile() -> None:

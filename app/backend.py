@@ -22,7 +22,8 @@ from urllib.parse import urlsplit
 import yt_dlp
 from yt_dlp.extractor.tiktok import TikTokIE
 from yt_dlp.networking import Request
-from yt_dlp.utils import DownloadError, ExtractorError
+from yt_dlp.networking.impersonate import ImpersonateTarget
+from yt_dlp.utils import DownloadError, ExtractorError, YoutubeDLError
 
 from .config import Settings
 from .errors import (
@@ -40,6 +41,8 @@ from .media import (
     KIND_COVER,
     KIND_IMAGES,
     KIND_META,
+    KIND_VIDEO_SD,
+    KIND_VIDEO_WM,
     VIDEO_KINDS,
     MediaFormat,
     ProfileListing,
@@ -61,10 +64,13 @@ CHUNK_SIZE = 64 * 1024
 MAX_FORMAT_ATTEMPTS = 4  # CDN URLs that fail to open before we give up
 MAX_PHOTO_BYTES = 50 * 1024 * 1024
 LISTING_RETRIES = 5  # yt-dlp's own tests use up to 10: TikTok sometimes repeats a page of a profile
+LISTING_PAUSE = 0.4  # seconds between the pages of a long listing (a whole profile is hundreds of requests)
+LISTING_PAUSE_ABOVE = 100  # ... but only past this many posts, so the page's own short listing stays quick
 TEMP_PREFIX = "snaptik-"
 TIKTOK_REFERER = "https://www.tiktok.com/"
 
 _AUDIO_TYPES = {"mp3": "audio/mpeg", "m4a": "audio/mp4", "aac": "audio/aac", "ogg": "audio/ogg", "opus": "audio/ogg"}
+_VIDEO_SUFFIX = {KIND_VIDEO_SD: "sd", KIND_VIDEO_WM: "watermarked"}  # so saving two renditions never collides
 # Raster formats only: never relay something like SVG that could carry script under our origin.
 _IMAGE_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/avif": "avif", "image/gif": "gif"}
 # Content types that say nothing about the bytes: for these the file itself decides what it is.
@@ -146,7 +152,10 @@ class Backend(Protocol):
 
 
 # Phrases in yt-dlp / TikTok error messages, checked in this order (see yt_dlp/extractor/tiktok.py).
-_BLOCKED = ("ip address is blocked", "challenge", "captcha", "http error 403", "http error 429", "too many requests")
+_BLOCKED = (
+    "ip address is blocked", "challenge", "captcha", "http error 403", "http error 429", "too many requests",
+    "failed to parse json",  # a page of the posts API that is TikTok's "access denied" HTML, not JSON
+)  # fmt: skip
 _LOGIN = ("requiring login", "log in", "login", "permission to view", "comfortable for some audiences")
 _EMPTY = ("does not have any videos", "any videos posted")
 _GONE = ("video not available", "private", "removed", "no longer available", "not exist", "http error 404")
@@ -168,6 +177,26 @@ def map_ytdlp_error(exc: BaseException) -> AppError:
     if any(phrase in text for phrase in _GONE):
         return VideoUnavailable()
     return UpstreamError()  # includes plain network failures, and "Service Unavailable" is deliberately not "gone"
+
+
+def _listing_error(exc: BaseException) -> AppError:
+    """``map_ytdlp_error`` with wording that fits listing a profile rather than reading one post."""
+    mapped = map_ytdlp_error(exc)
+    if isinstance(mapped, LoginRequired):
+        return LoginRequired("This account is private, so its posts can't be listed.")
+    if isinstance(mapped, UpstreamBlocked):
+        return UpstreamBlocked(
+            "TikTok refused to list this profile's posts to this connection. It may be blocking it right now: "
+            "try again later, or from another network."
+        )
+    if "unable to extract secondary user id" in str(exc).lower():
+        # yt-dlp's wording when the profile page held no account data: a misspelt name, or TikTok
+        # showing this server a block page. Either way "try again in a moment" would mislead.
+        return UpstreamError(
+            "Couldn't read that profile. Check the spelling of the name; if it is right, "
+            "TikTok may be refusing this server right now."
+        )
+    return mapped
 
 
 class _YdlLogger:
@@ -357,26 +386,44 @@ class YtDlpBackend:
 
     # ------------------------------------------------------------------ lookup
 
+    def _impersonation(self) -> dict[str, Any]:
+        """yt-dlp's ``impersonate`` option for the one request that needs it (listing a profile), or nothing."""
+        name = self.settings.impersonate.strip()
+        if not name:
+            return {}
+        try:
+            return {"impersonate": ImpersonateTarget.from_str(name)}
+        except ValueError:
+            log.warning("ignoring SNAPTIK_IMPERSONATE=%r: expected the name of a browser, such as 'chrome'", name)
+            return {}
+
     def _new_ydl(self, **overrides: Any) -> yt_dlp.YoutubeDL:
-        ydl = yt_dlp.YoutubeDL(
-            {
-                "logger": _YdlLogger(),
-                "quiet": True,
-                "noprogress": True,
-                "noplaylist": True,
-                "ignoreconfig": True,
-                "cachedir": False,
-                "socket_timeout": self.settings.network_timeout,
-                "retries": 2,
-                "extractor_retries": 2,
-                # We want every format, not yt-dlp's pick: we choose per download kind.
-                "format": "all",
-                "check_formats": False,
-                "ignore_no_formats_error": True,
-                "proxy": self.settings.proxy_url,
-                **overrides,
-            }
-        )
+        options = {
+            "logger": _YdlLogger(),
+            "quiet": True,
+            "noprogress": True,
+            "noplaylist": True,
+            "ignoreconfig": True,
+            "cachedir": False,
+            "socket_timeout": self.settings.network_timeout,
+            "retries": 2,
+            "extractor_retries": 2,
+            # We want every format, not yt-dlp's pick: we choose per download kind.
+            "format": "all",
+            "check_formats": False,
+            "ignore_no_formats_error": True,
+            "proxy": self.settings.proxy_url,
+            **overrides,
+        }
+        try:
+            ydl = yt_dlp.YoutubeDL(options)
+        except YoutubeDLError as exc:
+            if "impersonate" not in options:
+                raise
+            # The requested browser is not available (curl-cffi missing, or an unknown name): list without it.
+            log.warning("browser impersonation is unavailable, so TikTok may refuse the request: %s", exc)
+            del options["impersonate"]
+            ydl = yt_dlp.YoutubeDL(options)
         ydl.add_info_extractor(TikTokPhotosIE())
         return ydl
 
@@ -398,7 +445,8 @@ class YtDlpBackend:
 
     def list_profile(self, handle: str, limit: int) -> ProfileListing:
         """The newest ``limit`` posts of a profile, with captions, dates and stats (no per-post page loads)."""
-        ydl = self._new_ydl(extractor_retries=LISTING_RETRIES)
+        pause = {"sleep_interval_requests": LISTING_PAUSE} if limit > LISTING_PAUSE_ABOVE else {}
+        ydl = self._new_ydl(extractor_retries=LISTING_RETRIES, **pause, **self._impersonation())
         posts: list[ProfilePost] = []
         name: str | None = None
         more, warning = False, None
@@ -423,20 +471,10 @@ class YtDlpBackend:
                 if not posts:
                     raise
                 # A later page failed: the posts already collected are still worth showing.
-                warning = f"TikTok stopped the list early. {map_ytdlp_error(exc).message}"
+                warning = f"TikTok stopped the list early. {_listing_error(exc).message}"
                 more = True
         except (DownloadError, ExtractorError) as exc:
-            mapped = map_ytdlp_error(exc)
-            if isinstance(mapped, LoginRequired):
-                mapped = LoginRequired("This account is private, so its posts can't be listed.")
-            elif "unable to extract secondary user id" in str(exc).lower():
-                # yt-dlp's wording when the profile page held no account data: a misspelt name, or TikTok
-                # showing this server a block page. Either way "try again in a moment" would mislead.
-                mapped = UpstreamError(
-                    "Couldn't read that profile. Check the spelling of the name; if it is right, "
-                    "TikTok may be refusing this server right now."
-                )
-            raise mapped from exc
+            raise _listing_error(exc) from exc
         except AppError:
             raise
         except Exception as exc:
@@ -529,7 +567,8 @@ class YtDlpBackend:
             except UpstreamError as exc:
                 last_error = exc
                 continue
-            return self._stream(response, filename=safe_filename(download_stem(info), "mp4"), media_type="video/mp4")
+            filename = safe_filename(download_stem(info, _VIDEO_SUFFIX.get(kind, "")), "mp4")
+            return self._stream(response, filename=filename, media_type="video/mp4")
         raise last_error or UpstreamError()
 
     def _try_open_image(self, ydl: yt_dlp.YoutubeDL, url: str, stem: str) -> Download | None:

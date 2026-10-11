@@ -172,11 +172,20 @@ def test_video_is_streamed_byte_for_byte_with_the_headers_tiktok_expects(cdn: Cd
 
 
 @pytest.mark.parametrize(
-    ("kind", "path"), [("video", "/video.mp4"), ("video_sd", "/video-sd.mp4"), ("video_wm", "/video-wm.mp4")]
+    ("kind", "path", "name"),
+    [
+        ("video", "/video.mp4", "tiktok_scout2015_6718335390845095173.mp4"),
+        ("video_sd", "/video-sd.mp4", "tiktok_scout2015_6718335390845095173_sd.mp4"),
+        ("video_wm", "/video-wm.mp4", "tiktok_scout2015_6718335390845095173_watermarked.mp4"),
+    ],
 )
-def test_each_video_kind_fetches_its_own_rendition(cdn: Cdn, kind: str, path: str) -> None:
+def test_each_video_kind_fetches_its_own_rendition_under_its_own_file_name(cdn: Cdn, kind: str, path: str, name: str) -> None:
+    """Saving two renditions of one post (HD and SD, say) must not make the second overwrite the first."""
     download = make_backend(tiktok_like(cdn)).open_download(CANONICAL, kind)
-    download.close()
+    try:
+        assert download.filename == name
+    finally:
+        download.close()
     assert cdn.fetched() == [path]
 
 

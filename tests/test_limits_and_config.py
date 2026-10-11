@@ -172,6 +172,20 @@ def test_plain_port_variable_is_used_as_a_fallback(monkeypatch: pytest.MonkeyPat
     assert load_settings().port == 9001  # the specific variable wins
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, "chrome"), ("", "chrome"), ("   ", "chrome"), ("firefox", "firefox"), ("chrome:macos", "chrome:macos"),
+     ("off", ""), ("OFF", ""), ("none", ""), ("no", ""), ("false", ""), ("0", "")],
+)  # fmt: skip
+def test_browser_impersonation_for_listing_a_profile_is_on_by_default_and_can_be_turned_off(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, expected: str
+) -> None:
+    monkeypatch.delenv("SNAPTIK_IMPERSONATE", raising=False)
+    if value is not None:
+        monkeypatch.setenv("SNAPTIK_IMPERSONATE", value)
+    assert load_settings().impersonate == expected
+
+
 def test_blank_values_fall_back_to_defaults_and_bad_numbers_fail_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SNAPTIK_HOST", "   ")
     assert load_settings().host == "127.0.0.1"
