@@ -34,6 +34,7 @@
     profile: null, // the profile being shown; kept so "back to profile" needs no new request
     selected: new Set(), // ids ticked in the post list
     job: null, // id of the ZIP that is being built right now
+    jobHandle: null, // whose posts it holds, in case another profile is on screen meanwhile
   };
 
   class ApiError extends Error {
@@ -220,7 +221,7 @@
          sets a short-lived cookie when the response starts; watching for it tells us the
          download has begun.
        - Failure: the response is our JSON error, which does fire "load"; we show it. */
-  function fetchInFrame(href, { onStarted, onError } = {}) {
+  function fetchInFrame(href, { onStarted, onError, linger = 60000 } = {}) {
     const url = new URL(href, location.origin);
     let nonce = url.searchParams.get("n");
     if (!nonce) {
@@ -239,7 +240,7 @@
       clearInterval(poll);
       clearTimeout(giveUp);
       document.cookie = `dl_${nonce}=; Max-Age=0; Path=/`;
-      setTimeout(() => frame.remove(), 60000); // leave it be while the browser takes over the transfer
+      setTimeout(() => frame.remove(), linger); // leave it be while the browser takes over the transfer
       if (message) onError?.(message);
       else onStarted?.();
     };
@@ -338,7 +339,7 @@
     postList.replaceChildren(...data.posts.map((post) => buildPost(post, enabled)));
     postList.scrollTop = 0;
 
-    resetProgress();
+    if (!state.job) resetProgress(); // a ZIP that is still being built keeps its progress and Stop button
     updateSelection();
     show(profile);
     $("#p-title").focus({ preventScroll: true });
@@ -415,6 +416,8 @@
     progressText.textContent = "";
   }
 
+  const jobLabel = () => (state.jobHandle && state.jobHandle !== state.profile?.handle ? `@${state.jobHandle}: ` : "");
+
   function showProgress(snap) {
     progressBox.hidden = false;
     progressBar.max = Math.max(1, snap.total);
@@ -423,7 +426,7 @@
     if (snap.saved) parts.push(`${snap.saved} saved`);
     if (snap.skipped) parts.push(`${snap.skipped} unavailable`);
     if (snap.failed) parts.push(`${snap.failed} failed`);
-    progressText.textContent = parts.join(" · ") + (snap.message ? `. ${snap.message}` : "");
+    progressText.textContent = jobLabel() + parts.join(" · ") + (snap.message ? `. ${snap.message}` : "");
   }
 
   function summary(snap) {
@@ -435,18 +438,19 @@
     if (snap.state === "stopped") {
       return `Stopped: ${snap.saved} saved${tail ? `, ${tail}` : ""}. The ZIP in your downloads has what was finished.`;
     }
-    return `Stopped early: ${snap.message}`;
+    return `Stopped early: ${snap.message} The ZIP in your downloads has ${plural(snap.saved, "saved post")} and a REPORT.txt.`;
   }
 
   function endRun(snap) {
-    state.job = null;
     if (snap) {
       progressBar.value = progressBar.max;
-      progressText.textContent = summary(snap);
+      progressText.textContent = jobLabel() + summary(snap);
       stopButton.hidden = true;
     } else {
       progressBox.hidden = true;
     }
+    state.job = null;
+    state.jobHandle = null;
     updateSelection();
   }
 
@@ -480,11 +484,14 @@
     url.search = new URLSearchParams({ user: state.profile.handle, ids: ids.join(","), what, n: job }).toString();
 
     state.job = job;
+    state.jobHandle = state.profile.handle;
     resetProgress();
     showProgress({ total: ids.length, done: 0, saved: 0, skipped: 0, failed: 0, message: "Starting…" });
     progressBox.scrollIntoView({ behavior: "smooth", block: "nearest" });
     updateSelection();
-    fetchInFrame(url.href, { onError: () => endRun(null) }); // the server refused: its message is already in a toast
+    // The server refusing the request shows its own message in a toast. A ZIP can take up to half an hour, so
+    // the frame stays for longer than a single file's (no browser should be able to tie the transfer to it).
+    fetchInFrame(url.href, { onError: () => endRun(null), linger: 35 * 60 * 1000 });
     watch(job);
   });
 

@@ -106,7 +106,7 @@ It can, and bulk saving is exactly what triggers it, so the tool is built around
 - **Other trouble** (network hiccups, a failed conversion) is retried, and a post that keeps failing is recorded as failed and tried again on the next run. Five failures in a row also stop the run, rather than carrying on regardless.
 - **Resuming.** Posts already saved are never fetched again, and posts that were private or removed aren't re-checked unless you pass `--retry-skipped`. If you do get blocked, wait (minutes to hours, sometimes a day) and run the same command.
 
-What it deliberately does not do: rotate proxies, fake browser fingerprints, or download in parallel to get around a block. Those are what turns a temporary slowdown into a permanent ban. If a connection is blocked, the fix is to wait.
+What it deliberately does not do is try to get around a block. SnapTik reaches TikTok through yt-dlp, which presents itself the way a normal browser does (that is how every yt-dlp-based tool works), but SnapTik adds nothing on top: no rotating proxies or fake identities, and no parallel downloads to make up for the pauses. Tricks like those are what turn a temporary slowdown into a permanent ban. If a connection is blocked, the fix is to wait.
 
 ### Titles, captions… and comments
 

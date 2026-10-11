@@ -244,6 +244,7 @@ def main(
         + (f", {snap['failed']} failed" if snap["failed"] else "") + f". Files and manifest are in {folder}")  # fmt: skip
     if snap["state"] == "aborted":
         fail(f"Stopped early: {snap['message']}")
+        fail("Run the same command again later to carry on: posts that are already saved are skipped.")
         return EXIT_BLOCKED
     return EXIT_OK
 

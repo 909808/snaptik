@@ -238,7 +238,7 @@ class Pacer:
                 return Decision(
                     "abort",
                     reason="TikTok keeps refusing requests from this connection, so the run was stopped. "
-                    "Try again later; posts that were already saved are skipped next time.",
+                    "Wait a while before trying again.",
                 )
             pause = min(self.backoff_max, self.backoff_start * 2 ** (self._blocks - 1))
             return Decision("retry", wait=pause * self._rng.uniform(1.0, 1.25), reason=exc.message)
