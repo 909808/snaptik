@@ -28,7 +28,8 @@
   const progressBox = $("#p-progress");
   const progressBar = $("#p-bar");
   const progressText = $("#p-progress-text");
-  const wants = { media: $("#w-media"), audio: $("#w-audio"), cover: $("#w-cover") };
+  const wants = { media: $("#w-media"), audio: $("#w-audio"), cover: $("#w-cover"), best: $("#w-best") };
+  const SAVES = ["media", "audio", "cover"]; // "best" only says which video file, it is not something to save
 
   const state = {
     profile: null, // the profile being shown; kept so "back to profile" needs no new request
@@ -281,13 +282,14 @@
 
   // ------------------------------------------------------------- a profile
 
-  const wantedKinds = () => Object.keys(wants).filter((key) => wants[key].checked);
+  // What the server is asked for: the ticked boxes, except that "highest resolution" only means something for videos.
+  const wantedKinds = () => Object.keys(wants).filter((key) => wants[key].checked && (key !== "best" || wants.media.checked));
   const bulkOptions = () => state.profile?.bulk || {};
 
   function metaLine(post) {
     return [
       post.date,
-      post.duration ? formatDuration(post.duration) : null,
+      post.photos ? plural(post.photos, "photo") : post.duration ? formatDuration(post.duration) : null,
       Number.isFinite(post.views) ? `${compact.format(post.views)} views` : null,
     ].filter(Boolean).join(" · ");
   }
@@ -357,7 +359,12 @@
     $("#p-selected").textContent = `${n} selected (up to ${max} per ZIP)`;
     $("#p-all").textContent = `Select the newest ${Math.min(max, state.profile.posts.length)}`;
     $(".label", downloadButton).textContent = n ? `Download ${plural(n, "post")} as ZIP` : "Download as ZIP";
-    downloadButton.disabled = !n || !wantedKinds().length || Boolean(state.job);
+    downloadButton.disabled = !n || !SAVES.some((key) => wants[key].checked) || Boolean(state.job);
+    wants.best.disabled = !wants.media.checked;
+    $("#p-quality").hidden = !wants.media.checked;
+    $("#p-quality").textContent = wants.best.checked
+      ? "Highest resolution, up to 1080p. Some of these files are H.265, which some players (such as the default Windows apps) can't open."
+      : "Videos are saved in the format that plays on any device (H.264, up to 720p). Tick “Highest resolution” for sharper 1080p files.";
     $("#p-hint").textContent = n
       ? `Posts are fetched one at a time, with a pause of about ${plural(delay, "second")} between them so TikTok doesn't block this server. ` +
         `${plural(n, "post")} will take roughly ${formatWait(n * (delay + 4))}. For a complete archive of a big profile, use the command-line tool in the README.`

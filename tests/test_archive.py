@@ -117,6 +117,16 @@ def test_the_file_stem_sorts_by_date_and_stays_unique_by_id() -> None:
     assert post_stem(emoji_only, PostRef(post_id(4), post_url(4))) == f"2023-11-18_{post_id(4)}"
 
 
+def test_the_video_saved_by_default_opens_on_any_device_and_best_asks_for_the_sharpest() -> None:
+    backend = FakeBackend()
+    run(backend, refs(1), Wants())
+    assert backend.opened == [(post_id(1), "video_h264")]
+
+    backend = FakeBackend()
+    run(backend, refs(1), Wants(best=True))
+    assert backend.opened == [(post_id(1), "video")]
+
+
 def test_an_odd_id_in_tiktoks_answer_cannot_reach_a_file_name_or_the_manifest_key() -> None:
     """File names and the resume key use the id that was asked for (validated), not the one TikTok reports."""
     backend = FakeBackend(posts={post_id(1): make_post_info(1, id="../../evil/x")})
@@ -133,13 +143,15 @@ def test_an_odd_id_in_tiktoks_answer_cannot_reach_a_file_name_or_the_manifest_ke
         ("media,audio,cover", Wants(True, True, True)),
         (" audio , cover ", Wants(False, True, True)),
         ("cover,cover", Wants(False, False, True)),
+        ("media,best", Wants(True, False, False, True)),
+        ("audio, best", Wants(False, True, False, True)),
     ],
 )
 def test_wants_parse(text: str, wants: Wants) -> None:
     assert Wants.parse(text) == wants
 
 
-@pytest.mark.parametrize("text", ["", " , ", "video", "media,rm -rf", "MEDIA"])
+@pytest.mark.parametrize("text", ["", " , ", "video", "media,rm -rf", "MEDIA", "best", "best,best"])
 def test_wants_rejects_anything_unexpected(text: str) -> None:
     with pytest.raises(InvalidRequest):
         Wants.parse(text)
@@ -229,7 +241,7 @@ def test_files_have_the_right_content_and_the_manifest_describes_them() -> None:
     files, order, _ = run(backend, refs(2, 1))
     video = next(p for p in order if post_id(2) in p)
     assert video == f"2023-11-16_{post_id(2)}_caption-of-post-2-tag2.mp4"
-    assert files[video] == backend.body(post_id(2), "video")
+    assert files[video] == backend.body(post_id(2), "video_h264")
 
     manifest = records(files)
     assert [r["id"] for r in manifest] == [post_id(2), post_id(1)]  # newest first
@@ -298,7 +310,7 @@ def test_a_slideshow_whose_photos_all_fail_is_a_failed_post() -> None:
 
 
 def test_posts_that_are_gone_are_skipped_and_the_run_carries_on() -> None:
-    backend = FakeBackend(failures={(post_id(2), "lookup"): [VideoUnavailable()], (post_id(3), "video"): [LoginRequired()]})
+    backend = FakeBackend(failures={(post_id(2), "lookup"): [VideoUnavailable()], (post_id(3), "video_h264"): [LoginRequired()]})
     waits = Waits()
     files, order, progress = run(backend, refs(1, 2, 3, 4), pacer=pacer(waits))
     statuses = {r["id"]: r["status"] for r in records(files)}
@@ -426,7 +438,7 @@ def test_a_file_over_the_size_cap_is_skipped() -> None:
 
 
 def test_a_transfer_that_ends_early_never_becomes_a_file() -> None:
-    backend = FakeBackend(short_reads={(post_id(1), "video")})
+    backend = FakeBackend(short_reads={(post_id(1), "video_h264")})
     files, order, _ = run(backend, refs(1), pacer=pacer(max_retries=0))
     assert not any(p.endswith(".mp4") for p in order)
     assert records(files)[0]["status"] == "failed" and "cut the transfer short" in records(files)[0]["reason"]

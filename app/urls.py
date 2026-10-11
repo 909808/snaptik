@@ -131,6 +131,14 @@ def _follow_redirect(url: str, client: httpx.Client) -> str:
     return urljoin(url, location)
 
 
+def _is_tiktok_home(url: str) -> bool:
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return _is_tiktok_host((parts.hostname or "").lower().rstrip(".")) and parts.path in {"", "/"}
+
+
 def resolve_target(text: str, client: httpx.Client) -> Target:
     """Parse the input and follow short links (vm./vt./``/t/``) to a concrete video or profile.
 
@@ -142,6 +150,12 @@ def resolve_target(text: str, client: httpx.Client) -> Target:
     while target.is_short:
         if hops >= MAX_REDIRECTS:
             raise InvalidURL("That link redirects too many times.")
-        target = parse_tiktok_url(_follow_redirect(target.short_url, client))  # type: ignore[arg-type]
+        location = _follow_redirect(target.short_url, client)  # type: ignore[arg-type]
+        try:
+            target = parse_tiktok_url(location)
+        except InvalidURL:
+            if _is_tiktok_home(location):  # what TikTok does with a short link that has expired or never existed
+                raise InvalidURL("That short link doesn't lead to a video any more. It may have expired or been removed.") from None
+            raise
         hops += 1
     return target

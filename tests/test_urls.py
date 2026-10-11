@@ -239,6 +239,14 @@ def test_redirect_away_from_tiktok_is_rejected_and_never_fetched() -> None:
     assert seen == ["https://vm.tiktok.com/ZMabcdef/"]  # the evil target was only inspected, not requested
 
 
+@pytest.mark.parametrize("home", ["https://www.tiktok.com/?_r=1", "https://www.tiktok.com/", "https://tiktok.com", "https://m.tiktok.com/"])
+def test_a_short_link_that_ends_at_the_home_page_is_explained(home: str) -> None:
+    """What the real vm.tiktok.com, vt.tiktok.com and tiktok.com/t/ answer (302 to the home page) for a link that has expired."""
+    client, _ = make_client(lambda r: redirect(home, 302))
+    with pytest.raises(InvalidURL, match="doesn't lead to a video any more"):
+        resolve_target("https://vm.tiktok.com/ZMabcdef/", client)
+
+
 def test_redirect_to_a_non_video_page_is_rejected() -> None:
     client, _ = make_client(lambda r: redirect("https://www.tiktok.com/login?redirect_url=x"))
     with pytest.raises(InvalidURL):

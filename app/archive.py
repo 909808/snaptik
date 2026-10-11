@@ -33,7 +33,7 @@ from .errors import (
     UpstreamError,
     VideoUnavailable,
 )
-from .media import KIND_AUDIO, KIND_COVER, KIND_VIDEO, VideoInfo, post_record, posted_date
+from .media import KIND_AUDIO, KIND_COVER, KIND_VIDEO, KIND_VIDEO_H264, VideoInfo, post_record, posted_date
 
 log = logging.getLogger(__name__)
 
@@ -52,14 +52,17 @@ class Wants:
     media: bool = True  # the video, or all the photos of a slideshow
     audio: bool = False
     cover: bool = False
+    # Which video file: by default the best H.264 one, which plays on any device (TikTok's sharpest file is
+    # often H.265, which some players cannot open). ``best`` asks for the highest resolution instead.
+    best: bool = False
 
     @classmethod
     def parse(cls, text: str) -> Wants:
         names = {part.strip() for part in text.split(",") if part.strip()}
-        unknown = names - {"media", "audio", "cover"}
-        if unknown or not names:
+        unknown = names - {"media", "audio", "cover", "best"}
+        if unknown or not names & {"media", "audio", "cover"}:
             raise InvalidRequest("Choose what to save: videos/photos, sounds, covers.")
-        return cls(media="media" in names, audio="audio" in names, cover="cover" in names)
+        return cls(media="media" in names, audio="audio" in names, cover="cover" in names, best="best" in names)
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,7 +301,7 @@ def _fetch_post(
                 if not files:
                     raise FormatUnavailable("None of this post's photos could be downloaded.")
             elif wants.media:
-                download = post.open(KIND_VIDEO)
+                download = post.open(KIND_VIDEO if wants.best else KIND_VIDEO_H264)
                 add(download, f"{stem}.mp4")
 
             for wanted, kind, label in ((wants.audio, KIND_AUDIO, "sound"), (wants.cover, KIND_COVER, "cover")):

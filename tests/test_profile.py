@@ -16,7 +16,7 @@ import yt_dlp
 from yt_dlp.extractor.tiktok import TikTokUserIE
 from yt_dlp.utils import ExtractorError
 
-from app.backend import YtDlpBackend
+from app.backend import TikTokPhotosUserIE, YtDlpBackend
 from app.config import Settings
 from app.errors import LoginRequired, UpstreamBlocked, UpstreamError, VideoUnavailable
 from app.media import ProfilePost, parse_profile_entry
@@ -37,9 +37,9 @@ def user_page(*, count: int | None = 5, status: int | None = None) -> str:
     return f'<html><script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">{json.dumps(blob)}</script></html>'
 
 
-def item(n: int, *, desc: str | None = None, ts: int | None = None, plays: int = 1000) -> dict[str, Any]:
+def item(n: int, *, desc: str | None = None, ts: int | None = None, plays: int = 1000, photos: int = 0) -> dict[str, Any]:
     post_id = str(BASE + n)
-    return {
+    blob: dict[str, Any] = {
         "id": post_id,
         "desc": desc if desc is not None else f"post number {n} #fyp #cats",
         "createTime": ts if ts is not None else 1_700_000_000 + n * 100,
@@ -53,6 +53,10 @@ def item(n: int, *, desc: str | None = None, ts: int | None = None, plays: int =
             "dynamicCover": f"https://p16.example.test/{post_id}-animated.webp",
         },
     }
+    if photos:  # a photo post: the listing carries its photos too, and the "video" has no length of its own
+        blob["video"]["duration"] = 0
+        blob["imagePost"] = {"images": [{"imageURL": {"urlList": [f"https://p16.example.test/{post_id}-{i}.jpeg"]}} for i in range(photos)]}
+    return blob
 
 
 def page(*items: dict[str, Any], more: bool) -> dict[str, Any]:
@@ -64,7 +68,7 @@ def backend_for(
 ) -> tuple[YtDlpBackend, dict[str, int]]:
     calls = {"page": 0, "api": 0}
 
-    class TikTokUserFixtureIE(TikTokUserIE):
+    class TikTokUserFixtureIE(TikTokPhotosUserIE):
         def _download_webpage(self, *args: Any, **kwargs: Any) -> str:
             calls["page"] += 1
             return html if html is not None else user_page()
@@ -108,6 +112,13 @@ def test_a_profile_is_listed_newest_first_with_captions_dates_and_stats() -> Non
     assert newest.url == f"https://www.tiktok.com/@scout2015/video/{BASE + 5}"
     # Static covers come before the animated one, and the original-size cover outranks the small one.
     assert newest.thumbnail == f"https://p16.example.test/{BASE + 5}-origin.jpeg"
+
+
+def test_photo_posts_are_told_apart_from_videos_in_the_list() -> None:
+    backend, _ = backend_for([page(item(3), item(2, photos=4), item(1), more=False)])
+    posts = backend.list_profile("scout2015", 50).posts
+    assert [p.photos for p in posts] == [0, 4, 0]
+    assert posts[1].duration == 15  # the sound's length (yt-dlp falls back to it), which the page must not show for photos
 
 
 def test_a_small_limit_stops_paging_and_says_there_is_more() -> None:

@@ -6,10 +6,12 @@ import json
 import pytest
 
 from app.media import (
+    DOWNLOAD_KINDS,
     KIND_AUDIO,
     KIND_COVER,
     KIND_META,
     KIND_VIDEO,
+    KIND_VIDEO_H264,
     KIND_VIDEO_SD,
     KIND_VIDEO_WM,
     audio_plan,
@@ -108,6 +110,56 @@ def test_resolution_is_the_short_side_so_landscape_and_portrait_agree() -> None:
     assert fmt("p", w=1080, h=1920).resolution == 1080
     assert fmt("l", w=1920, h=1080).resolution == 1080
     assert fmt("unknown").resolution is None
+
+
+def todays_post():  # what real posts offer (seen live): H.264 stops at 720p, H.265 goes up to 1080p and is half the size
+    return make_info(duration=28, formats=[
+        fmt("bytevc1_540p_1027213", w=576, h=1024, vcodec="h265", tbr=1027, filesize=3_600_000),
+        fmt("h264_720p_2796748", w=720, h=1280, vcodec="h264", tbr=2796, filesize=9_900_000),
+        fmt("bytevc1_720p_1318175", w=720, h=1280, vcodec="h265", tbr=1318, filesize=4_600_000),
+        fmt("bytevc1_1080p_4288933", w=1080, h=1920, vcodec="h265", tbr=4288, filesize=15_100_000),
+    ])  # fmt: skip
+
+
+def test_the_compatible_video_is_the_best_h264_however_sharp_the_h265_files_are() -> None:
+    info = todays_post()
+    assert ids(video_candidates(info, KIND_VIDEO))[0] == "bytevc1_1080p_4288933"  # the highest resolution...
+    assert ids(video_candidates(info, KIND_VIDEO_H264)) == [  # ...but this one opens on any device
+        "h264_720p_2796748", "bytevc1_1080p_4288933", "bytevc1_720p_1318175", "bytevc1_540p_1027213",
+    ]  # the H.265 files stay as fallbacks in case no H.264 file will open, sharpest first
+
+
+def test_without_any_h264_the_compatible_video_is_just_the_best_available() -> None:
+    info = make_info(formats=[fmt("a", w=720, h=1280, vcodec="h265"), fmt("b", w=1080, h=1920, vcodec="h265")])
+    assert ids(video_candidates(info, KIND_VIDEO_H264)) == ["b", "a"]
+
+
+def test_the_compatible_video_is_never_a_watermarked_one_while_a_clean_one_exists() -> None:
+    info = make_info(formats=[
+        fmt("download", w=1080, h=1920, note="watermarked"),
+        fmt("avc", w=576, h=1024, vcodec="h264"),
+        fmt("hevc", w=720, h=1280, vcodec="h265"),
+    ])
+    assert ids(video_candidates(info, KIND_VIDEO_H264)) == ["avc", "hevc"]
+    marked_only = make_info(formats=[fmt("download", w=576, h=1024, note="watermarked")])
+    assert ids(video_candidates(marked_only, KIND_VIDEO_H264)) == ["download"]  # better than nothing, as for the main video
+    assert video_candidates(make_info(formats=[]), KIND_VIDEO_H264) == []
+
+
+def test_the_option_that_opens_everywhere_says_so_when_the_main_video_is_h265() -> None:
+    main, compatible = [o for o in build_options(todays_post(), ffmpeg_available=True) if o.kind in (KIND_VIDEO, KIND_VIDEO_SD)]
+    assert (main.title, main.detail) == ("Video · 1080p", "MP4 · H.265 · 14.4 MB")
+    assert (compatible.title, compatible.detail) == ("Video · 720p", "MP4 · H.264 · 9.4 MB · plays on any device")
+    # No such note when the main video is H.264 already, or when the lower rendition is H.265 as well.
+    ordinary = next(o for o in build_options(make_info(), ffmpeg_available=True) if o.kind == KIND_VIDEO_SD)
+    assert "plays on any device" not in ordinary.detail
+    both_hevc = make_info(formats=[fmt("a", w=1080, h=1920, vcodec="h265"), fmt("b", w=720, h=1280, vcodec="h265")])
+    assert "plays on any device" not in next(o for o in build_options(both_hevc, ffmpeg_available=True) if o.kind == KIND_VIDEO_SD).detail
+
+
+def test_the_compatible_video_is_a_download_kind_but_not_a_separate_button() -> None:
+    assert KIND_VIDEO_H264 in DOWNLOAD_KINDS
+    assert KIND_VIDEO_H264 not in [o.kind for o in build_options(todays_post(), ffmpeg_available=True)]
 
 
 def test_unknown_kinds_have_no_candidates() -> None:

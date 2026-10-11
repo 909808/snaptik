@@ -96,7 +96,8 @@ def make_listing(count: int = 5, *, handle: str = "scout2015", more: bool = Fals
     return ProfileListing(handle=handle, name="Scout", posts=posts, more=more, warning=warning)
 
 
-_EXT = {"video": "mp4", "video_sd": "mp4", "video_wm": "mp4", "audio": "mp3", "cover": "jpg", "meta": "json", "images": "zip"}
+_EXT = {"video": "mp4", "video_sd": "mp4", "video_wm": "mp4", "video_h264": "mp4", "audio": "mp3", "cover": "jpg",
+        "meta": "json", "images": "zip"}
 
 
 class FakePost:

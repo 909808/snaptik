@@ -56,7 +56,7 @@ def test_a_run_saves_every_post_a_manifest_and_a_log(cli: Cli) -> None:
     assert cli.files() == sorted([
         *(f"{STEMS[n]}.mp4" for n in (1, 2, 3)), "posts.json", "posts.csv", "posts.jsonl", "REPORT.txt",
     ])  # fmt: skip
-    assert (cli.folder / f"{STEMS[3]}.mp4").read_bytes() == backend.body(post_id(3), "video")
+    assert (cli.folder / f"{STEMS[3]}.mp4").read_bytes() == backend.body(post_id(3), "video_h264")
     assert set(cli.log()) == {post_id(n) for n in (1, 2, 3)} and all(r["status"] == "ok" for r in cli.log().values())
     manifest = json.loads((cli.folder / "posts.json").read_text(encoding="utf-8"))
     assert [m["id"] for m in manifest] == [post_id(n) for n in (3, 2, 1)]  # newest first
@@ -101,6 +101,15 @@ def test_a_caption_the_console_cannot_show_does_not_end_the_run(cli: Cli) -> Non
                 out=console, err=io.StringIO())  # fmt: skip
     assert code == EXIT_OK and "so fun" in raw.getvalue().decode("cp1252")
     assert json.loads((cli.folder / "posts.json").read_text(encoding="utf-8"))[0]["caption"] == "so fun 😀 日本語 #fyp"
+
+
+def test_the_video_saved_opens_on_any_device_unless_the_best_is_asked_for(cli: Cli) -> None:
+    default, best = backend_for(1), backend_for(1)
+    cli.run(default)
+    assert default.opened == [(post_id(1), "video_h264")]
+    other = Cli(cli.folder.parent / "elsewhere")
+    other.run(best, "--video", "best")
+    assert best.opened == [(post_id(1), "video")]
 
 
 def test_a_dry_run_only_reports(cli: Cli) -> None:
@@ -246,7 +255,9 @@ def test_a_listing_cut_short_is_reported(cli: Cli) -> None:
     assert "Warning: TikTok stopped the list early." in out and "run again later" in out
 
 
-@pytest.mark.parametrize("args", [["--what", "video"], ["--what", ""], ["--limit", "-1"], ["--delay", "fast"]])
+@pytest.mark.parametrize(
+    "args", [["--what", "video"], ["--what", ""], ["--limit", "-1"], ["--delay", "fast"], ["--video", "sharpest"], ["--what", "best"]]
+)
 def test_bad_options_are_a_usage_error(cli: Cli, args: list[str], capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as stop:
         cli.run(backend_for(1), *args)

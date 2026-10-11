@@ -194,6 +194,7 @@ class Service:
                     "caption": p.caption,
                     "date": iso_date(p.timestamp),
                     "duration": p.duration,
+                    "photos": p.photos or None,  # set for photo posts, whose "duration" is only their sound's
                     "thumbnail": p.thumbnail,
                     "views": p.stats.get("views"),
                     "likes": p.stats.get("likes"),

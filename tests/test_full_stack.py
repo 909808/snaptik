@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 from yt_dlp.extractor.tiktok import TikTokIE, TikTokUserIE
 
-from app.backend import TikTokPhotosIE, YtDlpBackend
+from app.backend import TikTokPhotosIE, TikTokPhotosUserIE, YtDlpBackend
 from app.bulk import EXIT_BLOCKED, EXIT_OK, main
 from app.config import Settings
 from tests.helpers import Cdn
@@ -43,7 +43,7 @@ def make_backend(cdn: Cdn, blobs: dict[str, tuple[dict[str, Any], int]], listed:
     """``blobs`` maps a post id to the (page data, status) its TikTok page would return."""
     page_loads: list[str] = []
 
-    class UserFixtureIE(TikTokUserIE):
+    class UserFixtureIE(TikTokPhotosUserIE):
         def _download_webpage(self, *args: Any, **kwargs: Any) -> str:
             return user_page(count=len(listed))
 
@@ -164,6 +164,30 @@ def test_a_profile_with_a_post_that_fails_halfway_can_be_finished_later(cdn: Cdn
     assert loads[2:] == [post(4)]  # ... but the skipped one is, on request, and now it is saved
     assert len(list(folder.glob("*.mp4"))) == 2
     assert [r["status"] for r in json.loads((folder / "posts.json").read_text(encoding="utf-8"))] == ["ok", "ok"]
+
+
+def test_the_video_saved_is_the_h264_one_unless_the_sharpest_is_asked_for(cdn: Cdn, media: dict[str, bytes], tmp_path: Path) -> None:
+    """Today's posts: H.264 stops at 720p while H.265 reaches 1080p. Saving must not default to a file some players can't open."""
+
+    def address(path: str, key: str, size: int, width: int, height: int) -> dict[str, Any]:
+        return {"Uri": key, "UrlList": [f"{cdn.url}/dead.mp4?k={key}", f"{cdn.url}{path}?k={key}"],
+                "UrlKey": key, "DataSize": str(size), "Width": width, "Height": height}  # fmt: skip
+
+    blob = page_blob(cdn, id=post(1), desc="today's renditions", createTime=str(START + DAY))
+    blob["video"] = {
+        "width": 576, "height": 1024, "duration": 15, "cover": f"{cdn.url}/cover.jpg", "originCover": f"{cdn.url}/cover.jpg",
+        "bitrateInfo": [
+            {"PlayAddr": address("/video-sd.mp4", "v09044g_h264_720p_2796748", 9_900_000, 720, 1280)},
+            {"PlayAddr": address("/video.mp4", "v09044g_bytevc1_1080p_4288933", 15_100_000, 1080, 1920)},
+        ],
+    }  # fmt: skip
+    backend, _ = make_backend(cdn, {post(1): (blob, 0)}, listed=[1])
+    h264_file, hevc_file = media["video.mp4"] + b"\x00sd", media["video.mp4"]  # what the CDN serves for each rendition
+
+    run(tmp_path / "default", backend)
+    run(tmp_path / "sharpest", backend, "--video", "best")
+    assert next((tmp_path / "default").glob("*.mp4")).read_bytes() == h264_file
+    assert next((tmp_path / "sharpest").glob("*.mp4")).read_bytes() == hevc_file
 
 
 def test_when_tiktok_says_the_ip_is_blocked_the_run_backs_off_then_stops_cleanly(cdn: Cdn, tmp_path: Path) -> None:

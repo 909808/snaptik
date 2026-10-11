@@ -20,7 +20,7 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 import yt_dlp
-from yt_dlp.extractor.tiktok import TikTokIE
+from yt_dlp.extractor.tiktok import TikTokIE, TikTokUserIE
 from yt_dlp.networking import Request
 from yt_dlp.networking.impersonate import ImpersonateTarget
 from yt_dlp.utils import DownloadError, ExtractorError, YoutubeDLError
@@ -321,18 +321,26 @@ def _extract_images(aweme: Any) -> list[list[str]]:
     return result
 
 
-class TikTokPhotosIE(TikTokIE):
-    """yt-dlp's TikTok extractor, plus the photos of slideshow posts (which it does not extract).
+class _KeepsPhotos:
+    """Mixin for yt-dlp's TikTok extractors: keep the photos of a slideshow post, which they do not extract.
 
     Page fetching, the anti-bot handling and all the parsing stay yt-dlp's; we only keep a
     piece of the post data that it discards. Photos travel in the info dict as ``snaptik_images``.
     """
 
     def _parse_aweme_video_web(self, aweme_detail: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        info = super()._parse_aweme_video_web(aweme_detail, *args, **kwargs)
+        info = super()._parse_aweme_video_web(aweme_detail, *args, **kwargs)  # type: ignore[misc]
         if images := _extract_images(aweme_detail):
             info["snaptik_images"] = images
         return info
+
+
+class TikTokPhotosIE(_KeepsPhotos, TikTokIE):
+    """One post, with its photos if it is a slideshow."""
+
+
+class TikTokPhotosUserIE(_KeepsPhotos, TikTokUserIE):
+    """A profile's listing, which can then tell photo posts from videos."""
 
 
 class PostSession:
@@ -374,7 +382,7 @@ class PostSession:
 
 class YtDlpBackend:
     IE_KEY = TikTokPhotosIE.ie_key()  # TikTok's extractor only, never yt-dlp's generic one
-    USER_IE_KEY = "TikTokUser"  # yt-dlp's built-in profile extractor
+    USER_IE_KEY = TikTokPhotosUserIE.ie_key()  # yt-dlp's profile extractor, plus the photos of slideshow posts
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -425,6 +433,7 @@ class YtDlpBackend:
             del options["impersonate"]
             ydl = yt_dlp.YoutubeDL(options)
         ydl.add_info_extractor(TikTokPhotosIE())
+        ydl.add_info_extractor(TikTokPhotosUserIE())
         return ydl
 
     def _extract(self, ydl: yt_dlp.YoutubeDL, url: str) -> Mapping[str, Any]:

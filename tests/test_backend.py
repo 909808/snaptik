@@ -176,6 +176,7 @@ def test_video_is_streamed_byte_for_byte_with_the_headers_tiktok_expects(cdn: Cd
     [
         ("video", "/video.mp4", "tiktok_scout2015_6718335390845095173.mp4"),
         ("video_sd", "/video-sd.mp4", "tiktok_scout2015_6718335390845095173_sd.mp4"),
+        ("video_h264", "/video.mp4", "tiktok_scout2015_6718335390845095173.mp4"),
         ("video_wm", "/video-wm.mp4", "tiktok_scout2015_6718335390845095173_watermarked.mp4"),
     ],
 )

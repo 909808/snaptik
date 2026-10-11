@@ -23,11 +23,12 @@ from typing import Any
 KIND_VIDEO = "video"
 KIND_VIDEO_SD = "video_sd"
 KIND_VIDEO_WM = "video_wm"
+KIND_VIDEO_H264 = "video_h264"  # the best H.264 file: plays on any device, even when TikTok has a sharper H.265 one
 KIND_AUDIO = "audio"
 KIND_COVER = "cover"
 KIND_IMAGES = "images"  # all photos of a slideshow post, as a ZIP
 KIND_META = "meta"  # caption and details, as JSON
-VIDEO_KINDS = (KIND_VIDEO, KIND_VIDEO_SD, KIND_VIDEO_WM)
+VIDEO_KINDS = (KIND_VIDEO, KIND_VIDEO_SD, KIND_VIDEO_WM, KIND_VIDEO_H264)
 DOWNLOAD_KINDS = (*VIDEO_KINDS, KIND_AUDIO, KIND_COVER, KIND_IMAGES, KIND_META)
 
 _DROP_HEADERS = {"cookie", "host", "content-length", "accept-encoding"}
@@ -259,6 +260,9 @@ def video_candidates(info: VideoInfo, kind: str) -> list[MediaFormat]:
     marked = sorted((f for f in pool if f.watermarked), key=_quality_key, reverse=True)
     if kind == KIND_VIDEO:
         return clean or marked  # a watermarked file beats no file at all
+    if kind == KIND_VIDEO_H264:
+        # H.264 first, however sharp the H.265 alternatives are; those stay as fallbacks if no H.264 file opens.
+        return [f for f in clean if f.codec_name == "H.264"] + [f for f in clean if f.codec_name != "H.264"] or marked
     if kind == KIND_VIDEO_WM:
         return marked if clean else []  # otherwise it is already offered as the main video
     if kind == KIND_VIDEO_SD:
@@ -330,9 +334,9 @@ def _size_text(fmt: MediaFormat, duration: int | None) -> str:
     return ""
 
 
-def _video_option(fmt: MediaFormat, info: VideoInfo, kind: str, *, primary: bool = False) -> DownloadOption:
+def _video_option(fmt: MediaFormat, info: VideoInfo, kind: str, *, primary: bool = False, note: str = "") -> DownloadOption:
     title = f"Video · {fmt.resolution}p" if fmt.resolution else "Video"
-    detail = " · ".join(p for p in ("MP4", fmt.codec_name, _size_text(fmt, info.duration)) if p)
+    detail = " · ".join(p for p in ("MP4", fmt.codec_name, _size_text(fmt, info.duration), note) if p)
     tag = "Watermarked" if fmt.watermarked else "No watermark"
     return DownloadOption(kind, title, detail, tag, "mp4", primary)
 
@@ -348,7 +352,9 @@ def build_options(info: VideoInfo, *, ffmpeg_available: bool) -> list[DownloadOp
     if main:
         options.append(_video_option(main[0], info, KIND_VIDEO, primary=True))
     if sd := video_candidates(info, KIND_VIDEO_SD):
-        options.append(_video_option(sd[0], info, KIND_VIDEO_SD))
+        # TikTok's sharpest file is often H.265, which some players (default Windows apps, say) cannot open.
+        compatible = bool(main) and main[0].codec_name == "H.265" and sd[0].codec_name == "H.264"
+        options.append(_video_option(sd[0], info, KIND_VIDEO_SD, note="plays on any device" if compatible else ""))
 
     if plan := audio_plan(info, ffmpeg_available=ffmpeg_available):
         detail = info.track or "Sound only"
@@ -437,6 +443,7 @@ class ProfilePost:
     duration: int | None
     thumbnail: str | None
     stats: dict[str, int | None]
+    photos: int = 0  # how many photos, if this is a photo post
 
 
 @dataclass(slots=True)
@@ -469,6 +476,7 @@ def parse_profile_entry(entry: Any, handle: str) -> ProfilePost | None:
             "comments": _int(entry.get("comment_count")),
             "shares": _int(entry.get("repost_count")),
         },
+        photos=len(_image_urls(entry.get("snaptik_images"))),
     )
 
 

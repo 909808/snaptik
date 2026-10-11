@@ -9,7 +9,7 @@ A small, self-hosted web app for saving TikTok videos, photo posts and whole pro
 ## Features
 
 - **Any link shape**: full links, short links (`vm.tiktok.com`, `vt.tiktok.com`, `tiktok.com/t/…`), embed links, or a whole pasted share text ("Check out … https://vm.tiktok.com/…").
-- **Video**: MP4 without watermark at the best available quality, a lighter rendition when one exists, and the original watermarked file when TikTok offers it.
+- **Video**: MP4 without watermark at the best available quality, plus a second option when TikTok's sharpest file is H.265: the best H.264 one, which plays on any device. The original watermarked file too, when TikTok offers it.
 - **Audio**: the post's own sound track as an ID3-tagged MP3 (M4A if ffmpeg isn't installed). **Cover**: the post's cover image.
 - **Photo posts**: all the photos in one ZIP (in the format TikTok serves them, usually JPEG or WebP), plus the sound and cover.
 - **Captions and details**: each post offers a small JSON with its caption, hashtags, date, stats and sound.
@@ -54,7 +54,7 @@ The image includes ffmpeg and runs as a non-root user with a read-only filesyste
 
 *Placeholder demo data, not real posts.*
 
-Paste a profile link (`https://www.tiktok.com/@name`) into the box. SnapTik lists the newest posts (up to `SNAPTIK_PROFILE_LIST_LIMIT`, 90 by default) with their captions, dates and view counts. Tick the posts you want, optionally add their sounds and covers, and press **Download as ZIP**. A progress bar shows each post as it is saved, and **Stop** ends the run early while still giving you a complete ZIP of what was done. Press **Open** on a post to see it on its own, with all its individual download options, and use the back link to return to the list.
+Paste a profile link (`https://www.tiktok.com/@name`) into the box. SnapTik lists the newest posts (up to `SNAPTIK_PROFILE_LIST_LIMIT`, 90 by default) with their captions, dates and view counts. Photo posts are marked with their photo count instead of a length. Tick the posts you want, optionally add their sounds and covers, and press **Download as ZIP**. A progress bar shows each post as it is saved, and **Stop** ends the run early while still giving you a complete ZIP of what was done. By default each video is saved in the format that plays on any device (H.264, up to 720p); tick **Highest resolution** for the sharpest file TikTok has (up to 1080p), which is often H.265 and won't open in some players. Press **Open** on a post to see it on its own, with all its individual download options, and use the back link to return to the list.
 
 To stay on the safe side of TikTok's limits, one ZIP holds at most `SNAPTIK_BULK_MAX_POSTS` posts (30 by default), only one ZIP runs at a time per server, and each client gets a handful per hour. For more than that, use the command line.
 
@@ -74,6 +74,7 @@ It accepts `@name`, a profile link or a short link. There is no post limit and n
 | `--out DIR` | `./tiktok-<name>` | Output folder. Use the same folder every time to resume. |
 | `--limit N` | all | Only the newest N posts. |
 | `--what` | `media` | Comma list of `media` (videos, and the photos of photo posts), `audio`, `cover`. |
+| `--video` | `compatible` | `compatible` saves the best H.264 file, which plays on any device (up to 720p). `best` saves the highest resolution (up to 1080p), which is often H.265. Posts that are already saved are not fetched again in the other format. |
 | `--delay SECONDS` | `3` | Pause between posts, varied by up to half either way. Anything under 1 is raised to 1. |
 | `--max-backoff SECONDS` | `900` | Longest wait when TikTok pushes back. |
 | `--retry-skipped` | off | Also retry posts that earlier runs found private or removed. |
@@ -118,6 +119,7 @@ What it deliberately does not do is try to get around a block. SnapTik reaches T
 - Private accounts and posts that need a login are skipped. SnapTik never asks for your TikTok password or cookies.
 - Only a profile's own posts are saved: not likes, favourites, reposts, stories or LIVE replays.
 - A file larger than `SNAPTIK_MAX_DOWNLOAD_MB` is skipped and recorded as such.
+- Some sounds can't be fetched: TikTok doesn't hand out licensed music to every connection (it can differ between networks, and over time). The post is still saved, and `REPORT.txt` says the sound was unavailable.
 - Photo posts are read from TikTok's page data directly, because yt-dlp itself only extracts their sound. If TikTok changes that data, those posts fall back to being skipped (with a reason in the report) until this is updated.
 - The profile list is as complete as TikTok's listing allows. If TikTok cuts the list short, the page and the command line say so and tell you to run again later.
 
@@ -181,18 +183,18 @@ or a profile (`"type": "profile"`) and its newest posts:
   "handle": "scout2015", "name": "Scout", "url": "https://www.tiktok.com/@scout2015",
   "posts": [
     {"id": "6718335390845095173", "url": "https://www.tiktok.com/@scout2015/video/6718335390845095173",
-     "caption": "…", "date": "2019-07-02", "duration": 15, "thumbnail": "https://…", "views": 1234, "likes": 56}
+     "caption": "…", "date": "2019-07-02", "duration": 15, "photos": null, "thumbnail": "https://…", "views": 1234, "likes": 56}
   ],
   "more": true, "warning": null,
   "bulk": {"enabled": true, "max_posts": 30, "delay": 3.0, "audio": true}
 }
 ```
 
-`more` says older posts exist beyond the ones listed; `warning` is set when TikTok cut the list short.
+`more` says older posts exist beyond the ones listed; `warning` is set when TikTok cut the list short; `photos` is the number of photos for a photo post (whose `duration` is only its sound's length) and `null` for a video.
 
-**`GET /api/download?url=<link>&kind=<kind>`** streams the file as an attachment. `kind` is one of `video`, `video_sd`, `video_wm`, `audio`, `cover`, `images` (a photo post's photos as a ZIP) or `meta` (caption and details as JSON); use the `href` values from `/api/info`, since not every kind exists for every post.
+**`GET /api/download?url=<link>&kind=<kind>`** streams the file as an attachment. `kind` is one of `video` (the highest resolution), `video_sd` (the next one down, which is H.264 when the main one is H.265), `video_wm` (watermarked), `video_h264` (the best H.264 file; what bulk saving uses by default), `audio`, `cover`, `images` (a photo post's photos as a ZIP) or `meta` (caption and details as JSON); use the `href` values from `/api/info`, since not every kind exists for every post.
 
-**`GET /api/bulk?user=<handle>&ids=<id,id,…>&what=media,audio,cover&n=<job id>`** streams a ZIP of the chosen posts of one profile, saved one at a time and paced. `n` is a random id of 16 to 32 letters and digits, chosen by the caller, that names the run so it can be followed and stopped:
+**`GET /api/bulk?user=<handle>&ids=<id,id,…>&what=media,audio,cover,best&n=<job id>`** streams a ZIP of the chosen posts of one profile, saved one at a time and paced. `what` is a comma list of `media`, `audio`, `cover` (at least one) and optionally `best` (the highest-resolution video instead of the best H.264 one). `n` is a random id of 16 to 32 letters and digits, chosen by the caller, that names the run so it can be followed and stopped:
 
 - **`GET /api/bulk/progress?n=<job id>`** returns `{"state": "running", "total": 12, "done": 4, "saved": 3, "skipped": 1, "failed": 0, "current": "…", "message": "…"}`. `state` ends as `done`, `stopped` (you asked, or the connection closed) or `aborted` (TikTok kept refusing).
 - **`POST /api/bulk/stop?n=<job id>`** ends the run after the post it is on. The ZIP so far is still completed and delivered.
@@ -271,7 +273,9 @@ ruff check .
 
 The suite needs no network access. It covers URL validation (including hostile inputs), format selection, rate limits, the HTTP API, and, with real yt-dlp and ffmpeg, streaming, CDN fallback, size caps, MP3 conversion and cleanup against a local server. For profiles it runs yt-dlp's real user-page and pagination code on TikTok-shaped fixtures, and checks the ZIP writer with an independent `unzip`. `tests/test_ytdlp_tiktok_parser.py` runs yt-dlp's real TikTok parser on a TikTok-shaped fixture and fails loudly if a yt-dlp upgrade changes the format naming this app relies on. The bulk code is tested for pacing and back-off (without really sleeping), cancellation, a browser disconnecting mid-ZIP, and resuming.
 
-What it **cannot** tell you is whether TikTok's live site still matches yt-dlp's extractors, whether the photo-post data has the shape this app expects, or how TikTok's rate limiting will treat your connection. Run `python -m app.smoke` and `python -m app.bulk @name --dry-run` against real accounts after installing or upgrading.
+What it **cannot** tell you is whether TikTok's live site still matches yt-dlp's extractors, or how TikTok's rate limiting will treat your connection. Run `python -m app.smoke` and `python -m app.bulk @name --dry-run` against real accounts after installing or upgrading.
+
+The app was also run against the real TikTok (on 2026-10-11, with yt-dlp 2026.8.19, from a data-centre network): a single post with all its downloads, a profile of three thousand posts listed through the CLI, a profile saved with its videos, sounds, covers and a photo carousel, resuming a run, the whole web page driven in a browser, and the error messages for a missing profile and an expired short link. Not exercised live: short links to a video that still exists, TikTok actually rate-limiting a run (so the back-off is only tested against simulated refusals), and the Docker image.
 
 ## Legal
 

@@ -70,12 +70,24 @@ def test_a_profile_link_returns_the_list_of_posts(client) -> None:
         "caption": "caption of post 5 #tag5",
         "date": "2023-11-19",
         "duration": 15,
+        "photos": None,
         "thumbnail": "https://cdn.example.test/5.jpg",
         "views": 5000,
         "likes": 50,
     }
     assert data["bulk"] == {"enabled": True, "max_posts": 30, "delay": 0.0, "audio": True}
     assert backend.list_calls == [("scout2015", 90)]
+
+
+def test_a_photo_post_in_the_list_says_how_many_photos_it_has() -> None:
+    from dataclasses import replace
+
+    listing = make_listing(3)
+    listing = replace(listing, posts=[replace(listing.posts[0], photos=4), *listing.posts[1:]])
+    c, _, _ = make(FakeBackend(listing=listing))
+    with c:
+        posts = c.post("/api/info", json={"url": PROFILE}).json()["posts"]
+    assert [p["photos"] for p in posts] == [4, None, None]  # its "duration" would only be the sound's length
 
 
 def test_a_profile_is_found_inside_pasted_text_and_cached(client) -> None:
@@ -159,11 +171,18 @@ def test_a_bulk_request_returns_one_zip_with_everything_and_a_manifest(client) -
     assert listed == [*expected, f"{root}posts.json", f"{root}posts.csv", f"{root}REPORT.txt"]
 
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-        assert archive.read(expected[0]) == backend.body(post_id(3), "video")
+        assert archive.read(expected[0]) == backend.body(post_id(3), "video_h264")
         assert archive.read(expected[1]) == backend.body(post_id(3), "audio")
         manifest = json.loads(archive.read(f"{root}posts.json"))
     assert {m["id"] for m in manifest} == {post_id(n) for n in (1, 2, 3)} and all(m["status"] == "ok" for m in manifest)
     assert backend.lookups == [post_id(n) for n in (3, 2, 1)]  # one lookup per post, in the order asked
+
+
+def test_the_video_in_the_zip_opens_on_any_device_unless_the_best_is_asked_for(client) -> None:
+    c, backend, _ = client
+    assert bulk(c, [1], what="media").status_code == 200
+    assert bulk(c, [2], what="media,best", job="bbbbbbbbbbbbbbbbbbbb").status_code == 200
+    assert backend.opened == [(post_id(1), "video_h264"), (post_id(2), "video")]
 
 
 def test_progress_is_readable_afterwards_and_the_slot_is_free_again(client) -> None:
@@ -228,7 +247,7 @@ def test_repeated_blocking_ends_the_zip_early_with_a_report() -> None:
 @pytest.mark.parametrize(
     "overrides",
     [{"user": "../etc"}, {"user": "a b"}, {"user": "x" * 101}, {"ids": ""}, {"ids": "abc"}, {"ids": "123"},
-     {"ids": f"{post_id(1)},not-a-number"}, {"what": ""}, {"what": "video"}, {"what": "media,exe"}, {"job": "short"},
+     {"ids": f"{post_id(1)},not-a-number"}, {"what": ""}, {"what": "video"}, {"what": "best"}, {"what": "media,exe"}, {"job": "short"},
      {"job": "has spaces in it 123456"}],
 )  # fmt: skip
 def test_bad_bulk_requests_are_rejected_before_anything_starts(client, overrides: dict[str, str]) -> None:

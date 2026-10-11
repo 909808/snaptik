@@ -16,6 +16,7 @@ import re
 import sys
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -135,6 +136,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", type=Path, help="output folder (default: ./tiktok-<name>)")
     parser.add_argument("--limit", type=int, default=0, metavar="N", help="only the newest N posts (default: all)")
     parser.add_argument("--what", default="media", help="comma list of: media, audio, cover (default: media)")
+    parser.add_argument("--video", choices=("compatible", "best"), default="compatible",
+                        help="which video file when TikTok offers several: 'compatible' is the best H.264 one, which "
+                        "plays on any device (up to 720p); 'best' is the highest resolution (up to 1080p), which is "
+                        "sometimes H.265, and some players cannot open that (default: compatible)")  # fmt: skip
     parser.add_argument("--delay", type=float, default=3.0, metavar="SECONDS",
                         help=f"pause between posts, varied a little (default 3, minimum {MIN_DELAY:g})")  # fmt: skip
     parser.add_argument("--max-backoff", type=float, default=900.0, metavar="SECONDS",
@@ -167,6 +172,8 @@ def main(
         wants = Wants.parse(args.what)
     except InvalidRequest as exc:
         parser.error(exc.message)
+    if args.video == "best":
+        wants = replace(wants, best=True)
     if args.limit < 0:
         parser.error("--limit must be zero or more")
     delay = max(MIN_DELAY, args.delay)
