@@ -89,6 +89,20 @@ def test_extras_are_saved_when_asked_for(cli: Cli) -> None:
     assert {f"{stem}.mp4", f"{stem}_sound.mp3", f"{stem}_cover.jpg"} <= set(cli.files())
 
 
+def test_a_caption_the_console_cannot_show_does_not_end_the_run(cli: Cli) -> None:
+    """Emoji in a caption on a console with a legacy code page (Windows, output piped to a file)."""
+    posts = {post_id(1): make_post_info(1, caption="so fun 😀 日本語 #fyp", description="so fun 😀 日本語 #fyp")}
+    backend = FakeBackend(posts=posts, listing=make_listing(1))
+    raw = io.BytesIO()
+    console = io.TextIOWrapper(raw, encoding="cp1252", errors="strict", write_through=True)
+    with pytest.raises(UnicodeEncodeError):
+        console.write("😀")  # what would have happened to every `print` of such a caption
+    code = main(["@scout2015", "--out", str(cli.folder)], backend=backend, sleep=cli.sleeps.append,
+                out=console, err=io.StringIO())  # fmt: skip
+    assert code == EXIT_OK and "so fun" in raw.getvalue().decode("cp1252")
+    assert json.loads((cli.folder / "posts.json").read_text(encoding="utf-8"))[0]["caption"] == "so fun 😀 日本語 #fyp"
+
+
 def test_a_dry_run_only_reports(cli: Cli) -> None:
     backend = backend_for(3)
     code, out, _ = cli.run(backend, "--dry-run")

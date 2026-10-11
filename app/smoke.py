@@ -14,6 +14,7 @@ import httpx
 
 from .backend import Backend, YtDlpBackend
 from .config import load_settings
+from .console import lenient
 from .errors import AppError
 from .media import build_options
 from .urls import resolve_target
@@ -28,6 +29,8 @@ def main(argv: Sequence[str] | None = None, *, backend: Backend | None = None) -
     parser.add_argument("url", help="a TikTok video link (full or short)")
     parser.add_argument("--save", metavar="DIR", type=Path, help="also download every offered file into DIR")
     args = parser.parse_args(argv)
+    lenient(sys.stdout)  # author names and captions are arbitrary text
+    lenient(sys.stderr)
 
     settings = load_settings()
     backend = backend or YtDlpBackend(settings)

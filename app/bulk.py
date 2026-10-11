@@ -24,6 +24,7 @@ import httpx
 from .archive import ArchiveFile, Pacer, PostRef, Progress, Wants, archive_posts
 from .backend import Backend, YtDlpBackend
 from .config import load_settings
+from .console import lenient
 from .errors import AppError, InvalidRequest, InvalidURL
 from .media import ProfilePost, iso_date
 from .urls import resolve_target
@@ -152,7 +153,7 @@ def main(
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
-    out, err = out or sys.stdout, err or sys.stderr
+    out, err = lenient(out or sys.stdout), lenient(err or sys.stderr)
 
     def say(text: str = "") -> None:
         print(text, file=out, flush=True)

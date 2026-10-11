@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import io
+import sys
 from pathlib import Path
 
 import pytest
 
 from app.errors import VideoUnavailable
 from app.smoke import main
-from tests.fakes import CANONICAL, FakeBackend
+from tests.fakes import CANONICAL, FakeBackend, make_info
 
 
 def test_smoke_lists_the_offers_and_saves_every_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -36,6 +38,14 @@ def test_smoke_reports_failures_with_a_nonzero_exit(capsys: pytest.CaptureFixtur
 def test_smoke_rejects_non_tiktok_links(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["https://example.com/x"], backend=FakeBackend()) == 1
     assert "invalid_url" in capsys.readouterr().err
+
+
+def test_smoke_survives_names_and_captions_the_console_cannot_show(monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = io.BytesIO()  # a console with a legacy code page, as on Windows when output is piped
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="cp1252", errors="strict", write_through=True))
+    backend = FakeBackend(make_info(author_name="Scout 😀", description="日本語 😀 caption"))
+    assert main([CANONICAL], backend=backend) == 0
+    assert b"Scout" in raw.getvalue() and raw.getvalue().rstrip().endswith(b"OK")
 
 
 def test_smoke_points_profile_links_to_the_profile_check(capsys: pytest.CaptureFixture[str]) -> None:
